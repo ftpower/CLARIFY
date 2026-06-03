@@ -10,7 +10,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 
-def plot_q_curve(results: list[dict], save_path: Path):
+def plot_q_curve(
+    results: list[dict],
+    save_path: Path,
+    model_name: str = "Qwen3-1.7B",
+    dataset_name: str = "Unknown",
+):
     """Plot q^(ℓ) vs layer index for all four estimators."""
     layers = [r["layer"] for r in results]
     q_overlap = [r.get("q_overlap", np.nan) for r in results]
@@ -34,7 +39,8 @@ def plot_q_curve(results: list[dict], save_path: Path):
     ax.set_xlabel("Layer", fontsize=12)
     ax.set_ylabel("q^(ℓ) (hallucination channel width)", fontsize=12)
     ax.set_title(
-        "Per-Layer Hallucination Channel Width q^(ℓ)\nPythia-1B + TriviaQA", fontsize=14
+        f"Per-Layer Hallucination Channel Width q^(ℓ)\n{model_name} + {dataset_name}",
+        fontsize=14,
     )
     ax.legend(fontsize=10)
     ax.set_ylim(-0.05, 1.05)

@@ -5,7 +5,7 @@ import os
 import numpy as np
 import torch
 import torch.nn.functional as F
-from transformers import AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from transformer_lens import HookedTransformer
 
 os.environ["HF_HUB_OFFLINE"] = "1"
@@ -26,6 +26,12 @@ def load_model(device: str = "cuda") -> HookedTransformer:
         local_files_only=True,
         torch_dtype=torch.float16,
     )
+    tokenizer = AutoTokenizer.from_pretrained(
+        "Qwen/Qwen3-1.7B",
+        cache_dir=CHECKPOINT_DIR,
+        trust_remote_code=True,
+        local_files_only=True,
+    )
     model = HookedTransformer.from_pretrained(
         "Qwen/Qwen3-1.7B",
         cache_dir=CHECKPOINT_DIR,
@@ -33,6 +39,7 @@ def load_model(device: str = "cuda") -> HookedTransformer:
         trust_remote_code=True,
         local_files_only=True,
         hf_model=hf_model,
+        tokenizer=tokenizer,
     )
     model.eval()
     return model
@@ -46,8 +53,9 @@ def get_per_layer_hidden_states(model: HookedTransformer, prompt: str):
 
     Returns:
         hidden_states: list of tensors, each [1, d_model] on CPU.
-          Index 0 = embedding output (resid_pre of block 0, after ln_final).
-          Index i = after block i-1 (resid_post of block i-1, after ln_final).
+          Index 0 = embedding output (resid_pre of block 0).
+          Index i (1..n_layers-1) = after block i-1 (resid_post of block i-1).
+          Index n_layers = final layer output after ln_final.
         final_logits: [1, vocab_size] raw logits at final layer.
         generated_token_id: the greedy token id from the final layer.
         generated_text: decoded text of the generated token.
@@ -76,11 +84,13 @@ def get_per_layer_hidden_states(model: HookedTransformer, prompt: str):
         logits_final = model.run_with_hooks(tokens, fwd_hooks=fwd_hooks)
 
     hidden_states = []
-    # Embedding output
-    hidden_states.append(ln_final(residuals["embed"]))
-    # After each block
-    for i in range(n_layers):
-        hidden_states.append(ln_final(residuals[f"L{i}"]))
+    # Embedding output (raw, no ln_final)
+    hidden_states.append(residuals["embed"])
+    # Intermediate layers (raw residual, no ln_final)
+    for i in range(n_layers - 1):
+        hidden_states.append(residuals[f"L{i}"])
+    # Only last layer gets ln_final
+    hidden_states.append(ln_final(residuals[f"L{n_layers - 1}"]))
 
     generated_token_id = logits_final[0, last_pos, :].argmax(dim=-1).item()
     generated_text = model.tokenizer.decode(generated_token_id)

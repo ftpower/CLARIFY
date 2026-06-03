@@ -108,6 +108,7 @@ def main(
     output_dir: str = "outputs",
     dataset: str = "triviaqa",
 ):
+    torch.manual_seed(42)
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
@@ -125,7 +126,7 @@ def main(
     model = load_model(device=device)
     W_U = model.unembed.W_U
     b_U = model.unembed.b_U
-    n_layers = model.cfg.n_layers  # 12 for OPT-125M
+    n_layers = model.cfg.n_layers
     n_total_layers = n_layers + 1  # embed + 12 blocks
 
     # --- Phase 1: Collect hidden states and labels ---
@@ -149,7 +150,7 @@ def main(
         prompt = format_prompt(question, context, dataset=dataset)
 
         hidden_states, _, gen_id, gen_text = get_per_layer_hidden_states(model, prompt)
-        is_correct = check_correct(gen_text.strip(), answers)
+        is_correct = check_correct(gen_text.strip(), answers, dataset=dataset)
 
         if is_correct:
             correct_count += 1
@@ -172,48 +173,76 @@ def main(
     print(f"Correct: {correct_count}, Incorrect: {incorrect_count}")
     print(f"Class balance: {correct_count / n_samples * 100:.1f}% correct")
 
-    # --- Phase 2: Calibrate per-layer temperatures ---
-    print("\nPhase 2: Calibrating per-layer temperatures...")
+    # --- Phase 2: Calibrate per-layer temperatures (split-half) ---
+    print("\nPhase 2: Calibrating per-layer temperatures (split-half)...")
+    n_cal = n_samples // 2
+    n_eval = n_samples - n_cal
+
+    # Build calibration set from first half
+    per_layer_h_cal = [layer_list[:n_cal] for layer_list in per_layer_h]
+    per_layer_targets_cal = [layer_list[:n_cal] for layer_list in per_layer_targets]
+    per_layer_labels_cal = [layer_list[:n_cal] for layer_list in per_layer_labels]
+
     temperatures = calibrate_temperatures(
-        per_layer_h, W_U, per_layer_targets, per_layer_labels, n_steps=50
+        per_layer_h_cal, W_U, per_layer_targets_cal, per_layer_labels_cal, n_steps=50
     )
     print("Per-layer calibrated temperatures:")
     for i, t in enumerate(temperatures):
         print(f"  Layer {i:>2}: T = {t:.6f}")
 
-    # --- Phase 3: Compute cosine + calibrated confidence ---
-    print("\nPhase 3: Computing calibrated cosine confidence...")
-    cos_confidences = [{"correct": [], "incorrect": []} for _ in range(n_total_layers)]
+    # --- Phase 3: Evaluate on held-out half ---
+    print(f"\nPhase 3: Evaluating on held-out half ({n_eval} samples)...")
+    dot_confidences_eval = [
+        {"correct": [], "incorrect": []} for _ in range(n_total_layers)
+    ]
+    cos_confidences_eval = [
+        {"correct": [], "incorrect": []} for _ in range(n_total_layers)
+    ]
 
-    for sample_idx in tqdm(range(n_samples), desc="Calib"):
+    correct_eval = 0
+    for sample_idx in tqdm(range(n_cal, n_samples), desc="Eval"):
         is_correct = per_layer_labels[0][sample_idx]
         target_id = per_layer_targets[0][sample_idx]
         bucket = "correct" if is_correct else "incorrect"
+        if is_correct:
+            correct_eval += 1
 
         # Reconstruct hidden states for this sample
         h_list = [
             per_layer_h[li][sample_idx].to(device) for li in range(n_total_layers)
         ]
+
+        # Dot-product (baseline) on eval set
+        confs_dot = get_confidence_dot(h_list, W_U, b_U, target_id)
+        for layer_idx, c in enumerate(confs_dot):
+            dot_confidences_eval[layer_idx][bucket].append(c)
+
+        # Cosine + calibrated on eval set
         confs_cos = get_confidence_cosine(
             h_list, W_U, target_id, temperatures=temperatures
         )
-
         for layer_idx, c in enumerate(confs_cos):
-            cos_confidences[layer_idx][bucket].append(c)
+            cos_confidences_eval[layer_idx][bucket].append(c)
+
+    print(f"Eval set: {correct_eval} correct, {n_eval - correct_eval} incorrect")
 
     # --- Results: dot-product (baseline) ---
-    dot_results = compute_q_results(dot_confidences, n_total_layers)
+    dot_results = compute_q_results(dot_confidences_eval, n_total_layers)
     print_results_table(dot_results, title="Dot-Product Confidence (Baseline)")
 
     # --- Results: cosine + calibrated ---
-    cos_results = compute_q_results(cos_confidences, n_total_layers)
+    cos_results = compute_q_results(cos_confidences_eval, n_total_layers)
     print_results_table(cos_results, title="Cosine + Calibrated Confidence")
 
     # --- Save results ---
     output = {
         "n_samples": n_samples,
+        "n_cal": n_cal,
+        "n_eval": n_eval,
         "n_correct": correct_count,
         "n_incorrect": incorrect_count,
+        "eval_correct": correct_eval,
+        "eval_incorrect": n_eval - correct_eval,
         "temperatures": temperatures,
         "dot_product": dot_results,
         "cosine_calibrated": cos_results,
@@ -224,8 +253,15 @@ def main(
     print(f"\nResults saved to {results_file}")
 
     # --- Visualize (cosine + calibrated as primary) ---
-    plot_q_curve(cos_results, output_path / "q_curve.png")
-    plot_distribution_overlap(cos_confidences, output_path / "distribution_overlap.png")
+    plot_q_curve(
+        cos_results,
+        output_path / "q_curve.png",
+        model_name="Qwen3-1.7B",
+        dataset_name=dataset.upper(),
+    )
+    plot_distribution_overlap(
+        cos_confidences_eval, output_path / "distribution_overlap.png"
+    )
     plot_estimator_consistency(cos_results, output_path / "estimator_consistency.png")
     print("Plots saved.")
 

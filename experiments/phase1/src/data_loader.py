@@ -105,10 +105,30 @@ def format_prompt(question: str, context: str = "", dataset: str = "triviaqa") -
     )
 
 
-def check_correct(prediction: str, answers: list[str]) -> bool:
-    """Check if prediction matches any ground-truth answer (case-insensitive)."""
+def check_correct(
+    prediction: str, answers: list[str], dataset: str = "triviaqa"
+) -> bool:
+    """Check if prediction matches any ground-truth answer.
+
+    For HellaSwag: exact label-letter match (answers[1] is the letter, e.g. 'D').
+    For QA datasets: word-boundary matching (avoids 'a' matching 'beach').
+    """
     pred_lower = prediction.strip().lower()
+    if dataset == "hellaswag":
+        # Extract first letter from prediction (handles "D", " D", "D." etc.)
+        pred_letter = pred_lower[0] if pred_lower else ""
+        label_letter = answers[1].lower()
+        return pred_letter == label_letter
+    # QA datasets: word-level matching
+    pred_words = set(pred_lower.split())
     for ans in answers:
-        if ans.lower() in pred_lower or pred_lower in ans.lower():
+        ans_lower = ans.lower().strip()
+        ans_words = set(ans_lower.split())
+        # Require at least one shared word or full answer as substring
+        if ans_words & pred_words:
             return True
+        # Full-answer containment with length guard
+        if len(pred_lower) >= 3 and len(ans_lower) >= 3:
+            if ans_lower in pred_lower or pred_lower in ans_lower:
+                return True
     return False

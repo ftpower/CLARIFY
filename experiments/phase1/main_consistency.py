@@ -11,6 +11,7 @@ from collections import Counter
 from pathlib import Path
 
 import numpy as np
+import torch
 from sklearn.metrics import roc_auc_score
 from tqdm import tqdm
 
@@ -36,6 +37,7 @@ def main(
     seed: int = 42,
 ):
     np.random.seed(seed)
+    torch.manual_seed(seed)
 
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
@@ -83,7 +85,7 @@ def main(
         majority_text = next(g[1] for g in gen_results if g[0] == most_common_id)
 
         # Check correctness against ground truth
-        is_correct = check_correct(majority_text, answers)
+        is_correct = check_correct(majority_text, answers, dataset=dataset)
         if is_correct:
             correct_count += 1
 
@@ -135,6 +137,23 @@ def main(
             f"  Threshold >={threshold}: P={precision:.3f} R={recall:.3f} "
             f"TP={tp} FP={fp} FN={fn} TN={tn}"
         )
+
+    # --- Confident but wrong: high consistency yet incorrect ---
+    cw_threshold = 0.8
+    confident_wrong = [
+        r for r in records if r["consistency"] >= cw_threshold and not r["is_correct"]
+    ]
+    print(
+        f"\nConfident-but-wrong (consistency >= {cw_threshold}): "
+        f"{len(confident_wrong)} / {n_samples} samples"
+    )
+    if confident_wrong:
+        print(f"  Examples of high-confidence errors:")
+        for r in confident_wrong[:3]:
+            print(
+                f"    consistency={r['consistency']:.1f} → "
+                f"'{r['majority_answer']}' (true answers: not matched)"
+            )
 
     # --- Save results ---
     output = {

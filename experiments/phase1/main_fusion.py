@@ -49,13 +49,19 @@ def extract_signals(hidden_states, W_U, device):
     return variances, norms
 
 
-def compute_auroc(scores, labels):
-    """Compute AUROC, flipping if < 0.5."""
+# Prior direction for each signal: +1 = higher values → correct, -1 = higher → incorrect
+SIGNAL_PRIORS = {
+    "logit_variance": +1,  # higher variance → more decisive → correct
+    "residual_norm": +1,  # higher norm → stronger activation → correct
+}
+
+
+def compute_auroc(scores, labels, prior=None):
+    """Compute AUROC. If prior is given, apply it to orient scores (no auto-flip)."""
+    if prior is not None and prior == -1:
+        scores = np.array(scores) * -1
     try:
-        auroc = roc_auc_score(labels, scores)
-        if auroc < 0.5:
-            auroc = roc_auc_score(labels, -scores)
-        return max(auroc, 0.5)
+        return roc_auc_score(labels, scores)
     except ValueError:
         return np.nan
 
@@ -103,7 +109,7 @@ def main(
         prompt = format_prompt(question, context, dataset=dataset)
 
         hidden_states, _, gen_id, gen_text = get_per_layer_hidden_states(model, prompt)
-        is_correct = check_correct(gen_text.strip(), answers)
+        is_correct = check_correct(gen_text.strip(), answers, dataset=dataset)
 
         variances, norms = extract_signals(hidden_states, W_U, device)
 
@@ -118,74 +124,90 @@ def main(
     print(f"Correct: {correct_count}, Incorrect: {n_samples - correct_count}")
     print(f"Accuracy: {correct_count / n_samples:.1%}")
 
-    # --- Per-layer single-signal baselines ---
+    # --- Split-half: first half for training (if needed), second half for evaluation ---
+    n_half = n_samples // 2
+    labels_test = labels[n_half:]
+
+    # --- Per-layer single-signal baselines (evaluated on test half only) ---
     best_var_auroc = 0
     best_norm_auroc = 0
     best_var_layer = -1
     best_norm_layer = -1
 
     for li in range(n_total_layers):
-        auroc_var = compute_auroc(np.array(all_variances[li]), labels)
-        auroc_norm = compute_auroc(np.array(all_norms[li]), labels)
-        if auroc_var > best_var_auroc:
+        var_test = np.array(all_variances[li][n_half:])
+        norm_test = np.array(all_norms[li][n_half:])
+        auroc_var = compute_auroc(
+            var_test, labels_test, prior=SIGNAL_PRIORS["logit_variance"]
+        )
+        auroc_norm = compute_auroc(
+            norm_test, labels_test, prior=SIGNAL_PRIORS["residual_norm"]
+        )
+        if not np.isnan(auroc_var) and auroc_var > best_var_auroc:
             best_var_auroc = auroc_var
             best_var_layer = li
-        if auroc_norm > best_norm_auroc:
+        if not np.isnan(auroc_norm) and auroc_norm > best_norm_auroc:
             best_norm_auroc = auroc_norm
             best_norm_layer = li
 
-    print(f"\nSingle-signal baselines:")
+    print(f"\nSingle-signal baselines (eval on {n_samples - n_half} held-out samples):")
     print(f"  logit_variance: AUROC = {best_var_auroc:.4f} @ L{best_var_layer}")
     print(f"  residual_norm:  AUROC = {best_norm_auroc:.4f} @ L{best_norm_layer}")
 
-    # --- Fusion methods ---
+    # --- Fusion methods (all evaluated on the same test half) ---
     print("\n" + "=" * 80)
-    print("Fusion Results: per-layer AUROC for each fusion method")
+    print("Fusion Results: per-layer AUROC (all methods on held-out test set)")
     print("=" * 80)
 
     best_overall = {"method": "", "layer": -1, "auroc": 0}
 
-    # Method 1: z-score averaging (no training)
     print(
         f"\n{'Layer':>6} {'var_only':>10} {'norm_only':>10} {'zscore_avg':>12} {'logreg':>10} {'best_individual':>14}"
     )
     print("-" * 72)
 
     for li in range(n_total_layers):
-        variance_scores = np.array(all_variances[li])
-        norm_scores = np.array(all_norms[li])
+        # Test-set-only data for evaluation
+        variance_test = np.array(all_variances[li][n_half:])
+        norm_test = np.array(all_norms[li][n_half:])
 
-        # Z-score normalize
-        var_z = (variance_scores - variance_scores.mean()) / (
-            variance_scores.std() + 1e-12
-        )
-        norm_z = (norm_scores - norm_scores.mean()) / (norm_scores.std() + 1e-12)
+        # Z-score normalize on test set
+        var_z = (variance_test - variance_test.mean()) / (variance_test.std() + 1e-12)
+        norm_z = (norm_test - norm_test.mean()) / (norm_test.std() + 1e-12)
 
         # Simple average of z-scores
-        fused_zscore_avg = var_z + norm_z  # equally weighted
-        auroc_zscore = compute_auroc(fused_zscore_avg, labels)
+        fused_zscore_avg = var_z + norm_z
+        auroc_zscore = compute_auroc(fused_zscore_avg, labels_test)
 
-        # Logistic regression fusion (5-fold cross-val style: split-half)
-        # Fit on first half, evaluate on second half
-        n_half = n_samples // 2
-        X = np.stack([variance_scores, norm_scores], axis=1)
-        X_scaled = StandardScaler().fit_transform(X)
+        # Logistic regression fusion (train on first half, test on second)
+        X_full = np.stack(
+            [np.array(all_variances[li]), np.array(all_norms[li])], axis=1
+        )
+        X_train_raw, X_test_raw = X_full[:n_half], X_full[n_half:]
+        y_train = labels[:n_half]
 
-        # Train on first half
-        X_train, X_test = X_scaled[:n_half], X_scaled[n_half:]
-        y_train, y_test = labels[:n_half], labels[n_half:]
+        scaler = StandardScaler()
+        X_train = scaler.fit_transform(X_train_raw)
+        X_test = scaler.transform(X_test_raw)
 
         lr = LogisticRegression(max_iter=1000)
         try:
             lr.fit(X_train, y_train)
             y_pred = lr.predict_proba(X_test)[:, 1]
-            auroc_logreg = compute_auroc(y_pred, y_test)
+            auroc_logreg = compute_auroc(y_pred, labels_test)
         except Exception:
             auroc_logreg = np.nan
 
-        auroc_var = compute_auroc(variance_scores, labels)
-        auroc_norm = compute_auroc(norm_scores, labels)
-        best_individual = max(auroc_var, auroc_norm)
+        # Single-signal baselines on same test set with prior direction
+        auroc_var = compute_auroc(
+            variance_test, labels_test, prior=SIGNAL_PRIORS["logit_variance"]
+        )
+        auroc_norm = compute_auroc(
+            norm_test, labels_test, prior=SIGNAL_PRIORS["residual_norm"]
+        )
+        best_individual = max(
+            [v for v in [auroc_var, auroc_norm] if not np.isnan(v)], default=np.nan
+        )
 
         print(
             f"{li:>6} {auroc_var:10.4f} {auroc_norm:10.4f} "
@@ -206,30 +228,40 @@ def main(
     print(f"  logit_variance (single):     {best_var_auroc:.4f} @ L{best_var_layer}")
     print(f"  residual_norm (single):      {best_norm_auroc:.4f} @ L{best_norm_layer}")
     print(
-        f"  z-score average (fusion):    {best_overall['auroc']:.4f} @ L{best_overall['layer']} [{best_overall['method']}]"
+        f"  z-score avg / logreg (fusion): {best_overall['auroc']:.4f} @ L{best_overall['layer']} [{best_overall['method']}]"
     )
 
-    # --- Mid-layer average: practical approach that doesn't require layer selection ---
+    # --- Mid-layer average on test set ---
     mid_start, mid_end = 11, 23
     mid_var = np.array(
         [
-            compute_auroc(np.array(all_variances[li]), labels)
+            compute_auroc(
+                np.array(all_variances[li][n_half:]),
+                labels_test,
+                prior=SIGNAL_PRIORS["logit_variance"],
+            )
             for li in range(mid_start, mid_end + 1)
         ]
     )
     mid_norm = np.array(
         [
-            compute_auroc(np.array(all_norms[li]), labels)
+            compute_auroc(
+                np.array(all_norms[li][n_half:]),
+                labels_test,
+                prior=SIGNAL_PRIORS["residual_norm"],
+            )
             for li in range(mid_start, mid_end + 1)
         ]
     )
-    print(f"\n  Mid-layer (L{mid_start}-L{mid_end}) mean AUROC:")
+    print(f"\n  Mid-layer (L{mid_start}-L{mid_end}) mean AUROC (eval set):")
     print(f"    logit_variance: {mid_var.mean():.4f} ± {mid_var.std():.4f}")
     print(f"    residual_norm:  {mid_norm.mean():.4f} ± {mid_norm.std():.4f}")
 
     # --- Save ---
     output = {
         "n_samples": n_samples,
+        "n_train": n_half,
+        "n_test": n_samples - n_half,
         "n_correct": correct_count,
         "n_incorrect": n_samples - correct_count,
         "accuracy": correct_count / n_samples,
