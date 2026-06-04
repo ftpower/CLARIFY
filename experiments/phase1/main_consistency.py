@@ -35,6 +35,7 @@ def main(
     n_gen: int = 5,
     temperature: float = 0.7,
     seed: int = 42,
+    model_id: str = "Qwen/Qwen3-1.7B",
 ):
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -52,8 +53,8 @@ def main(
         samples = load_triviaqa(n_samples=n_samples)
 
     # --- Load model ---
-    print("Loading Qwen3-1.7B-Instruct...")
-    model = load_model(device=device)
+    print(f"Loading {model_id}...")
+    model = load_model(device=device, model_id=model_id)
 
     # --- Generate N times per sample ---
     print(f"Phase: Generating {n_gen} samples per question (T={temperature})...")
@@ -187,6 +188,7 @@ if __name__ == "__main__":
         "--n_gen", type=int, default=5, help="Number of samples per question"
     )
     parser.add_argument("--temperature", type=float, default=0.7)
+    parser.add_argument("--model", type=str, default="Qwen/Qwen3-1.7B")
     args = parser.parse_args()
     main(
         args.n_samples,
@@ -195,4 +197,5 @@ if __name__ == "__main__":
         args.dataset,
         args.n_gen,
         args.temperature,
+        model_id=args.model,
     )

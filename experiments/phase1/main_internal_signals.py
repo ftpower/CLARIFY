@@ -127,6 +127,7 @@ def main(
     output_dir: str = "outputs_internal_signals",
     dataset: str = "hellaswag",
     seed: int = 42,
+    model_id: str = "Qwen/Qwen3-1.7B",
 ):
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -144,8 +145,8 @@ def main(
         samples = load_triviaqa(n_samples=n_samples)
 
     # --- Load model ---
-    print("Loading Qwen3-1.7B-Instruct...")
-    model = load_model(device=device)
+    print(f"Loading {model_id}...")
+    model = load_model(device=device, model_id=model_id)
     W_U = model.unembed.W_U
     n_layers = model.cfg.n_layers
     n_total_layers = n_layers + 1
@@ -326,5 +327,6 @@ if __name__ == "__main__":
         default="hellaswag",
         choices=["triviaqa", "squad", "hellaswag"],
     )
+    parser.add_argument("--model", type=str, default="Qwen/Qwen3-1.7B")
     args = parser.parse_args()
-    main(args.n_samples, args.device, args.output_dir, args.dataset)
+    main(args.n_samples, args.device, args.output_dir, args.dataset, model_id=args.model)

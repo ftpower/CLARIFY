@@ -17,23 +17,26 @@ CHECKPOINT_DIR = os.path.abspath(
 )
 
 
-def load_model(device: str = "cuda") -> HookedTransformer:
-    """Load Qwen3-1.7B-Instruct via TransformerLens (offline-compatible)."""
+def load_model(
+    device: str = "cuda",
+    model_id: str = "Qwen/Qwen3-1.7B",
+) -> HookedTransformer:
+    """Load a model via TransformerLens (offline-compatible)."""
     hf_model = AutoModelForCausalLM.from_pretrained(
-        "Qwen/Qwen3-1.7B",
+        model_id,
         cache_dir=CHECKPOINT_DIR,
         trust_remote_code=True,
         local_files_only=True,
         torch_dtype=torch.float16,
     )
     tokenizer = AutoTokenizer.from_pretrained(
-        "Qwen/Qwen3-1.7B",
+        model_id,
         cache_dir=CHECKPOINT_DIR,
         trust_remote_code=True,
         local_files_only=True,
     )
     model = HookedTransformer.from_pretrained(
-        "Qwen/Qwen3-1.7B",
+        model_id,
         cache_dir=CHECKPOINT_DIR,
         device=device,
         trust_remote_code=True,

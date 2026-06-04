@@ -107,6 +107,7 @@ def main(
     device: str = "cuda",
     output_dir: str = "outputs",
     dataset: str = "triviaqa",
+    model_id: str = "Qwen/Qwen3-1.7B",
 ):
     torch.manual_seed(42)
     output_path = Path(output_dir)
@@ -122,8 +123,8 @@ def main(
         samples = load_triviaqa(n_samples=n_samples)
 
     # --- Load model ---
-    print("Loading Qwen3-1.7B-Instruct...")
-    model = load_model(device=device)
+    print(f"Loading {model_id}...")
+    model = load_model(device=device, model_id=model_id)
     W_U = model.unembed.W_U
     b_U = model.unembed.b_U
     n_layers = model.cfg.n_layers
@@ -256,7 +257,7 @@ def main(
     plot_q_curve(
         cos_results,
         output_path / "q_curve.png",
-        model_name="Qwen3-1.7B",
+        model_name=model_id,
         dataset_name=dataset.upper(),
     )
     plot_distribution_overlap(
@@ -271,6 +272,7 @@ if __name__ == "__main__":
     parser.add_argument("--n_samples", type=int, default=100)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--output_dir", type=str, default="outputs")
+    parser.add_argument("--model", type=str, default="Qwen/Qwen3-1.7B")
     parser.add_argument(
         "--dataset",
         type=str,
@@ -278,4 +280,4 @@ if __name__ == "__main__":
         choices=["triviaqa", "squad", "hellaswag"],
     )
     args = parser.parse_args()
-    main(args.n_samples, args.device, args.output_dir, args.dataset)
+    main(args.n_samples, args.device, args.output_dir, args.dataset, args.model)
