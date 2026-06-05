@@ -203,6 +203,23 @@ def compute_ece(confidences: np.ndarray, labels: np.ndarray, n_bins: int = 15) -
     return float(ece)
 
 
+def compute_p_correct(logits: torch.Tensor, answers: list[str], tokenizer) -> float:
+    """Approximate P(correct_answer | final_logits) as knowledge proxy.
+
+    Tokenizes each answer alias and returns the max softmax probability
+    across all single-token continuations. Used as sample weight in wAUROC.
+    """
+    probs = torch.softmax(logits, dim=-1)
+    max_p = 0.0
+    for ans in answers:
+        tokens = tokenizer.encode(ans, add_special_tokens=False)
+        if tokens:
+            p = probs[tokens[0]].item()
+            if p > max_p:
+                max_p = p
+    return max_p
+
+
 def calibrate_temperatures(
     per_layer_h: list[list[torch.Tensor]],
     W_U: torch.Tensor,

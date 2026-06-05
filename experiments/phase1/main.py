@@ -29,6 +29,7 @@ from src.model_utils import (
     get_confidence_dot,
     get_confidence_cosine,
     calibrate_temperatures,
+    compute_p_correct,
 )
 from src.estimators import compute_all_estimators
 from src.visualization import (
@@ -143,6 +144,8 @@ def main(
 
     correct_count = 0
     incorrect_count = 0
+    p_correct_values = []  # per-sample knowledge proxy for wAUROC
+    generated_texts = []  # per-sample generated text
 
     for sample in tqdm(samples, desc="Samples"):
         question = sample["question"]
@@ -150,7 +153,9 @@ def main(
         context = sample["context"]
         prompt = format_prompt(question, context, dataset=dataset)
 
-        hidden_states, _, gen_id, gen_text = get_per_layer_hidden_states(model, prompt)
+        hidden_states, logits_final, gen_id, gen_text = get_per_layer_hidden_states(
+            model, prompt
+        )
         is_correct = check_correct(gen_text.strip(), answers, dataset=dataset)
 
         if is_correct:
@@ -158,6 +163,11 @@ def main(
         else:
             incorrect_count += 1
         target_id = gen_id
+
+        # Compute P(correct | final_logits) as knowledge proxy for wAUROC
+        p_c = compute_p_correct(logits_final, answers, model.tokenizer)
+        p_correct_values.append(p_c)
+        generated_texts.append(gen_text.strip())
 
         # Dot-product confidence (baseline, same as before)
         confs_dot = get_confidence_dot(hidden_states, W_U, b_U, target_id)
@@ -201,7 +211,10 @@ def main(
     ]
 
     correct_eval = 0
+    per_sample_eval = []  # per-sample data for offline wAUROC / logit lens analysis
+
     for sample_idx in tqdm(range(n_cal, n_samples), desc="Eval"):
+        sample = samples[sample_idx]
         is_correct = per_layer_labels[0][sample_idx]
         target_id = per_layer_targets[0][sample_idx]
         bucket = "correct" if is_correct else "incorrect"
@@ -224,6 +237,20 @@ def main(
         )
         for layer_idx, c in enumerate(confs_cos):
             cos_confidences_eval[layer_idx][bucket].append(c)
+
+        # Collect per-sample data for offline analysis (wAUROC, logit lens)
+        per_sample_eval.append(
+            {
+                "question": sample["question"],
+                "answers": sample["answers"],
+                "context": sample.get("context", ""),
+                "generated_text": generated_texts[sample_idx],
+                "is_correct": bool(is_correct),
+                "p_correct": p_correct_values[sample_idx],
+                "dot_confidences": confs_dot,
+                "cos_confidences": confs_cos,
+            }
+        )
 
     print(f"Eval set: {correct_eval} correct, {n_eval - correct_eval} incorrect")
 
@@ -252,6 +279,12 @@ def main(
     with open(results_file, "w") as f:
         json.dump(output, f, indent=2)
     print(f"\nResults saved to {results_file}")
+
+    # Save per-sample data for offline analysis (wAUROC, logit lens)
+    per_sample_file = output_path / "per_sample.json"
+    with open(per_sample_file, "w") as f:
+        json.dump(per_sample_eval, f, indent=2, ensure_ascii=False)
+    print(f"Per-sample data saved to {per_sample_file}")
 
     # --- Visualize (cosine + calibrated as primary) ---
     plot_q_curve(
