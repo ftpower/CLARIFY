@@ -52,7 +52,7 @@ print(f'  Python:   {__import__(\"sys\").version.split()[0]}')
 print(f'  PyTorch:  {torch.__version__}')
 print(f'  CUDA:     {torch.version.cuda}')
 print(f'  GPU:      {torch.cuda.get_device_name(0)}')
-print(f'  VRAM:     {torch.cuda.get_device_properties(0).total_mem / 1e9:.1f} GB')
+print(f'  VRAM:     {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB')
 assert torch.cuda.is_available(), 'CUDA not available!'
 "
 echo ""
@@ -168,7 +168,7 @@ print(f'Python:          {sys.version.split()[0]}')
 print(f'PyTorch:         {torch.__version__}')
 print(f'CUDA:            {torch.version.cuda}')
 print(f'GPU:             {torch.cuda.get_device_name(0)}')
-print(f'VRAM:            {torch.cuda.get_device_properties(0).total_mem / 1e9:.1f} GB')
+print(f'VRAM:            {torch.cuda.get_device_properties(0).total_memory / 1e9:.1f} GB')
 print(f'transformer_lens: {transformer_lens.__version__}')
 print(f'datasets:        {datasets.__version__}')
 print(f'transformers:    {transformers.__version__}')
