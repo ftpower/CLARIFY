@@ -11,7 +11,7 @@ echo "===== CLARIFY 服务器环境配置 ====="
 echo ""
 
 # ---- 基本配置 ----
-REPO_URL="https://github.com/YOUR_USERNAME/CLARIFY.git"   # ← 改成你的仓库地址
+REPO_URL="https://github.com/ftpower/CLARIFY.git"
 HF_ENDPOINT="${HF_ENDPOINT:-https://hf-mirror.com}"
 
 # 要下载的模型列表（空格分隔）
