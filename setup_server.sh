@@ -93,7 +93,7 @@ echo "[4/6] 克隆代码仓库..."
 
 PROJECT_DIR="$HOME/CLARIFY"
 
-if [ -n "$REPO_URL" ] && [ "$REPO_URL" != "https://github.com/YOUR_USERNAME/CLARIFY.git" ]; then
+if [ -n "$REPO_URL" ]; then
     if [ -d "$PROJECT_DIR" ]; then
         echo "  $PROJECT_DIR 已存在，git pull 更新..."
         cd "$PROJECT_DIR" && git pull
