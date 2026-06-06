@@ -126,8 +126,10 @@ def main(
     # --- Load model ---
     print(f"Loading {model_id}...")
     model = load_model(device=device, model_id=model_id)
-    W_U = model.unembed.W_U
+    W_U = model.unembed.W_U.to(device)
     b_U = model.unembed.b_U
+    if b_U is not None:
+        b_U = b_U.to(device)
     n_layers = model.cfg.n_layers
     n_total_layers = n_layers + 1  # embed + 12 blocks
 

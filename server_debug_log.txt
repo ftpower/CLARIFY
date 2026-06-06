@@ -1,0 +1,129 @@
+AutoDL 服务器实验调试日志
+=========================
+日期: 2026-06-06
+服务器: AutoDL RTX 5090 (32GB VRAM), 25 CPU, 90GB RAM
+镜像: PyTorch 2.8.0, Python 3.12, CUDA 12.8
+
+
+问题 1: huggingface_hub / transformers 版本冲突
+-------------------------------------------------
+错误: ImportError: cannot import name 'is_offline_mode' from 'huggingface_hub'
+原因: 此前为兼容 hf-mirror 下载降级了 huggingface_hub，与新版 transformers 不兼容。
+解决: pip install --upgrade huggingface_hub
+说明: 数据集下载完后不再需要卡旧版本，升级即可。
+
+
+问题 2: 数据集下载到系统盘
+-------------------------------------------------
+错误: 系统盘仅 30G，三个数据集 (TriviaQA + SQuAD + HellaSwag) 约 15-20G，会撑爆。
+原因: ~/.cache/huggingface/ 默认在系统盘。
+解决:
+  1. mkdir -p /root/autodl-tmp/huggingface_cache
+  2. cp -r ~/.cache/huggingface/* /root/autodl-tmp/huggingface_cache/
+  3. echo 'export HF_HOME=/root/autodl-tmp/huggingface_cache' >> ~/.bashrc
+  4. rm -rf ~/.cache/huggingface/
+  5. 之后所有 HF 缓存（模型、数据集）都走数据盘。
+
+
+问题 3: CHECKPOINT_DIR 路径不匹配
+-------------------------------------------------
+错误: OSError: Cannot find the requested files in the disk cache.
+原因: model_utils.py 中 CHECKPOINT_DIR 解析为 /root/CLARIFY/checkpoints/，
+      但模型下载在 /root/autodl-tmp/checkpoints/。
+解决: ln -s /root/autodl-tmp/checkpoints /root/CLARIFY/checkpoints
+
+
+问题 4: HF 缓存标准目录结构缺失（核心疑难问题）
+-------------------------------------------------
+错误: AutoConfig.from_pretrained("Qwen/Qwen3-8B", cache_dir=..., local_files_only=True)
+      无法在缓存中找到 config.json。
+原因: 模型通过 huggingface_hub.snapshot_download() 下载，文件直接放在
+      models--Qwen--Qwen3-8B/ 根目录下，缺少 HF 缓存标准子目录:
+        snapshots/<commit_hash>/  (权重/配置文件)
+        refs/main                (指向当前 commit hash)
+      try_to_load_from_cache() 找不到文件，scan_cache_dir() 也扫不到该 repo。
+失败的尝试:
+  - 手动创建 snapshots/<hash>/ 并软链接所有文件
+  - 创建 refs/main 写入 hash
+  - 软链接到 HF_HOME/hub/ 下
+  - 设 HF_ENDPOINT/unset HF_ENDPOINT
+  全部无效 — try_to_load_from_cache 始终返回 None。
+最终方案: 放弃缓存查找，改为直接用本地路径加载 AutoModel/AutoTokenizer，
+         再手动构建 HookedTransformer（绕过 TL 内部的 AutoConfig 调用）。
+         见 model_utils.py 中 _find_local_path() 和 load_model() 的重写。
+
+
+问题 5: TransformerLens 不支持本地路径
+-------------------------------------------------
+错误: ValueError: /root/.../models--Qwen--Qwen3-8B not found. Valid official model names: [...]
+原因: TL 3.3.0 的 from_pretrained() 先调用 get_official_model_name() 做名称白名单验证，
+      本地路径直接被拒绝，即使 get_pretrained_model_config 后续有 Path().exists() 检查也走不到。
+解决: 不调 HookedTransformer.from_pretrained()，改为手动构建:
+  1. load_path = "/root/autodl-tmp/checkpoints/models--Qwen--Qwen3-8B"
+  2. hf_model = AutoModelForCausalLM.from_pretrained(load_path, trust_remote_code=True)
+  3. tokenizer = AutoTokenizer.from_pretrained(load_path, trust_remote_code=True)
+  4. official_name = get_official_model_name(model_id)   # 仅验证名称
+  5. cfg_dict = convert_hf_model_config(load_path, trust_remote_code=True)
+  6. cfg_dict["init_weights"] = False; cfg_dict["device"] = "cpu"
+  7. cfg = HookedTransformerConfig(**cfg_dict)
+  8. state_dict = get_pretrained_state_dict(official_name, cfg, hf_model, dtype=torch.float16)
+  9. del hf_model; gc.collect()  # 立即释放，防止双份权重驻留
+ 10. model = HookedTransformer(cfg, tokenizer, move_to_device=False)
+ 11. model.load_and_process_state_dict(state_dict, fold_ln=False, ...)
+ 12. del state_dict
+ 13. model.move_model_modules_to_device()
+重点: cfg_dict["device"] = "cpu" 必须在构造 HookedTransformerConfig 前设置，
+      否则模型参数默认在 GPU 上创建，导致显存直接占满。
+
+
+问题 6: 系统内存 OOM (进程被 Kill)
+-------------------------------------------------
+错误: "Killed" (Linux OOM killer)
+原因: fold_ln=True 在 load_and_process_state_dict 内部创建 state_dict 的完整副本。
+      同时驻留: hf_model (16GB) + state_dict (16GB) + folded copy (16GB) + TL model (16GB)
+      ≈ 48-64GB，加上其他进程，触发 OOM。
+解决:
+  1. del hf_model 移到 load_and_process_state_dict 之前（state_dict 已提取完）。
+  2. 所有内存重的处理选项设为 False:
+       fold_ln=False
+       center_writing_weights=False
+       center_unembed=False
+       fold_value_biases=False
+  3. del state_dict 在 load_and_process_state_dict 之后立即执行。
+
+
+问题 7: GPU 显存 OOM
+-------------------------------------------------
+错误: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 16.00 MiB.
+      GPU 0 total 31.36 GiB, process has 31.34 GiB in use.
+原因: cfg_dict 未设 device 或 HookedTransformerConfig 默认将参数创建在 GPU 上，
+      导致模型在创建时直接占满 32GB 显存，前向传播无剩余空间。
+解决:
+  1. cfg_dict["device"] = "cpu" — 强制在 CPU 创建参数
+  2. move_to_device=False — 不在构造时迁移
+  3. 加载完 state_dict、删除中间变量后，再调用 move_model_modules_to_device()
+  4. 环境变量: PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True (减少碎片)
+
+
+问题 8: AutoDL 无法访问 GitHub
+-------------------------------------------------
+错误: git pull/push 超时
+原因: AutoDL 国内节点无法直连 github.com。
+解决:
+  - 短代码改动直接通过 Python 一行脚本编辑服务器端文件
+  - 或通过其他方式传文件 (scp/rsync)
+  - 必要时多次 git pull 重试
+
+
+关键结论
+--------
+1. 在 AutoDL 上下载模型/数据集时，务必先设置 HF_HOME 到数据盘 (/root/autodl-tmp/)。
+2. snapshot_download 下载的模型缺少标准 HF 缓存子目录结构，
+   不能通过 local_files_only=True + cache_dir 加载，必须用本地绝对路径。
+3. TransformerLens 3.3.0 不支持本地路径作为 model_name，
+   需手动拆解 from_pretrained 内部流程。
+4. 8B+ 模型加载时，必须严格控制同时驻留的权重副本数量：
+   - hf_model 提取完 state_dict 立即 del
+   - fold_ln 等内存重操作全部关掉
+   - 参数在 CPU 创建，加载完再移 GPU
+5. 峰值内存: hf_model (CPU, ~16GB) → state_dict (共享, ~0) → TL model (CPU, ~16GB) → GPU (~16GB)
