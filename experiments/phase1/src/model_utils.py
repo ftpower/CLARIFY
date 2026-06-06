@@ -70,6 +70,7 @@ def load_model(
         cfg_dict = convert_hf_model_config(local_path, trust_remote_code=True)
         cfg_dict["model_name"] = official_name.split("/")[-1]
         cfg_dict["init_weights"] = False
+        cfg_dict["device"] = "cpu"  # create on CPU, move to GPU after
         if "original_architecture" not in cfg_dict:
             cfg_dict["original_architecture"] = hf_model.config.architectures[0]
         # Determine normalization type for fold_ln
