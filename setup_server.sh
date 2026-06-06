@@ -75,15 +75,13 @@ echo "[3/6] 安装项目依赖..."
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REQ_FILE="$SCRIPT_DIR/requirements.txt"
 
+# 先用镜像装核心依赖（不加 --quiet，方便看到进度）
 if [ -f "$REQ_FILE" ]; then
-    # 过滤掉镜像已预装的包（torch/nvidia/triton）和不需要的包
-    grep -v -E "^(torch==|torchvision==|torchaudio==|triton==|nvidia-|open.clip|sentry-sdk|wandb)" "$REQ_FILE" > /tmp/requirements_clean.txt
-    pip install -r /tmp/requirements_clean.txt --quiet
+    pip install -r "$REQ_FILE"
 else
-    # fallback：直接装核心包
     pip install transformer_lens datasets scipy scikit-learn matplotlib \
         transformers tokenizers accelerate sentencepiece safetensors \
-        einops jaxtyping pandas fsspec rich --quiet
+        einops jaxtyping pandas fsspec rich tqdm
 fi
 echo "  依赖安装完成"
 echo ""
@@ -124,7 +122,7 @@ for model in "${MODELS[@]}"; do
         echo "  $model 已存在，跳过"
     else
         echo "  下载 $model ..."
-        huggingface-cli download "$model" --local-dir "$target" --resume-download
+        hf download "$model" --local-dir "$target"
     fi
 done
 
@@ -135,13 +133,16 @@ for model in "${MODELS[@]}"; do
     link_name="$PROJECT_DIR/checkpoints/models--$safe_name"
     if [ ! -e "$link_name" ]; then
         ln -s "$MODEL_DIR/models--$safe_name" "$link_name"
-        echo "  软链接: $link_name → $MODEL_DIR/models--$safe_name"
+        echo "  软链接: $link_name -> $MODEL_DIR/models--$safe_name"
     fi
 done
 echo ""
 
 # ---- Step 6: 预下载数据集 ----
 echo "[6/6] 预下载数据集..."
+
+# 确保当前 shell 有 HF_ENDPOINT（.bashrc 可能尚未生效）
+export HF_ENDPOINT="$HF_ENDPOINT"
 
 for ds in "${DATASETS[@]}"; do
     echo "  下载 $ds ..."

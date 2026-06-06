@@ -1,0 +1,29 @@
+明天开机后按顺序执行：
+
+1. 确认镜像生效
+source ~/.bashrc
+echo $HF_ENDPOINT
+# 应输出 https://hf-mirror.com
+
+2. 续传数据集下载（已有 2.2GB 缓存，自动跳过已下完的文件）
+nohup python -c "from datasets import load_dataset; load_dataset('trivia_qa', 'rc', split='validation', trust_remote_code=False); load_dataset('squad_v2', split='validation', trust_remote_code=False); load_dataset('hellaswag', split='validation', trust_remote_code=False); print('OK')" > ~/dl.log 2>&1 &
+
+# 查看进度：tail ~/dl.log
+# 确认大小：du -sh ~/.cache/huggingface/datasets/
+# 等待出现 "OK" 再进行下一步
+
+3. 验证 10 样本
+cd ~/CLARIFY/experiments/phase1
+nohup python main.py --n_samples 10 --model Qwen/Qwen3-8B --output_dir outputs_test > ~/exp_test.log 2>&1 &
+# 查看进度：tail ~/exp_test.log
+
+4. 正式实验 200 样本
+cd ~/CLARIFY/experiments/phase1
+nohup python main.py --n_samples 200 --model Qwen/Qwen3-8B --output_dir outputs_qwen3_8b_200 > ~/exp_200.log 2>&1 &
+# 查看进度：tail ~/exp_200.log
+
+5. 下载结果到本地
+# 服务器上打包：
+tar czf ~/results_8b.tar.gz -C ~/CLARIFY/experiments/phase1 outputs_qwen3_8b_200
+# 本地 PowerShell 拉取：
+scp -P 49247 root@connect.westd.seetacloud.com:~/results_8b.tar.gz C:\Users\Fengtao\Desktop\
