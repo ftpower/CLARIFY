@@ -22,30 +22,29 @@ def load_model(
     model_id: str = "Qwen/Qwen3-1.7B",
 ) -> HookedTransformer:
     """Load a model via TransformerLens (offline-compatible)."""
-    # Resolve local path (handles both HF cache and flat checkpoints/ dir)
+    # Resolve local path for HF transformers (handles flat checkpoints/ dir)
     local_path = os.path.join(
         CHECKPOINT_DIR, "models--" + model_id.replace("/", "--")
     )
-    if os.path.isdir(local_path):
-        model_path = local_path
-    else:
-        model_path = model_id
+    use_local = os.path.isdir(local_path)
+    load_path = local_path if use_local else model_id
 
     hf_model = AutoModelForCausalLM.from_pretrained(
-        model_path,
+        load_path,
         cache_dir=CHECKPOINT_DIR,
         trust_remote_code=True,
         local_files_only=True,
         torch_dtype=torch.float16,
     )
     tokenizer = AutoTokenizer.from_pretrained(
-        model_path,
+        load_path,
         cache_dir=CHECKPOINT_DIR,
         trust_remote_code=True,
         local_files_only=True,
     )
+    # HookedTransformer needs official model name, but uses pre-loaded hf_model/tokenizer
     model = HookedTransformer.from_pretrained(
-        model_path,
+        model_id,
         cache_dir=CHECKPOINT_DIR,
         device=device,
         trust_remote_code=True,
