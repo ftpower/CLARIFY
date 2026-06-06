@@ -34,6 +34,7 @@ from src.model_utils import (
     get_confidence_cosine,
     calibrate_temperatures,
     compute_p_correct,
+    generate_answer,
 )
 from src.estimators import compute_all_estimators
 from src.visualization import (
@@ -162,18 +163,25 @@ def main(
         hidden_states, logits_final, gen_id, gen_text = get_per_layer_hidden_states(
             model, prompt
         )
-        is_correct = check_correct(gen_text.strip(), answers, dataset=dataset)
+        target_id = gen_id
+
+        # Multi-token answer for QA datasets (HellaSwag is single-letter, no need)
+        if dataset in ("triviaqa", "squad"):
+            answer_text = generate_answer(model, prompt, max_new_tokens=20)
+        else:
+            answer_text = gen_text.strip()
+
+        is_correct = check_correct(answer_text, answers, dataset=dataset)
 
         if is_correct:
             correct_count += 1
         else:
             incorrect_count += 1
-        target_id = gen_id
 
         # Compute P(correct | final_logits) as knowledge proxy for wAUROC
         p_c = compute_p_correct(logits_final, answers, model.tokenizer)
         p_correct_values.append(p_c)
-        generated_texts.append(gen_text.strip())
+        generated_texts.append(answer_text)
 
         # Dot-product confidence (baseline, same as before)
         confs_dot = get_confidence_dot(hidden_states, W_U, b_U, target_id)

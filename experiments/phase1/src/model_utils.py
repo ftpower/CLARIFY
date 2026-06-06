@@ -195,6 +195,30 @@ def generate_token(
     return token_id, token_text
 
 
+def generate_answer(
+    model: HookedTransformer, prompt: str, max_new_tokens: int = 20
+) -> str:
+    """Generate a multi-token answer via greedy decoding (no hidden state extraction).
+
+    Returns decoded answer text (does NOT include the prompt).
+    """
+    tokens = model.to_tokens(prompt, prepend_bos=True)
+    if tokens.shape[1] > 1024:
+        tokens = tokens[:, :1024]
+    prompt_len = tokens.shape[1]
+
+    with torch.no_grad():
+        for _ in range(max_new_tokens):
+            logits = model(tokens)
+            next_id = logits[0, -1, :].argmax(dim=-1)
+            tokens = torch.cat([tokens, next_id.unsqueeze(0).unsqueeze(0)], dim=-1)
+            if next_id.item() == model.tokenizer.eos_token_id:
+                break
+
+    new_ids = tokens[0, prompt_len:]
+    return model.tokenizer.decode(new_ids).strip()
+
+
 def get_confidence_dot(
     hidden_states: list[torch.Tensor],
     W_U: torch.Tensor,
