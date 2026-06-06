@@ -86,12 +86,13 @@ def load_model(
         torch.cuda.empty_cache()
 
         model = HookedTransformer(cfg, tokenizer, move_to_device=False)
+        # All processing disabled to avoid in-place copies that double peak RAM.
         model.load_and_process_state_dict(
             state_dict,
-            fold_ln=True,
-            center_writing_weights=True,
-            center_unembed=True,
-            fold_value_biases=True,
+            fold_ln=False,
+            center_writing_weights=False,
+            center_unembed=False,
+            fold_value_biases=False,
             refactor_factored_attn_matrices=False,
         )
         del state_dict
