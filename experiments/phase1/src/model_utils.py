@@ -99,8 +99,8 @@ def load_model(
         del state_dict
 
         if device not in (None, "cpu"):
-            model.move_model_modules_to_device()
             model.cfg.device = device
+            model.to(device)
     else:
         model = HookedTransformer.from_pretrained(
             model_id,
