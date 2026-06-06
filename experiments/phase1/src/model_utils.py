@@ -1,12 +1,18 @@
 """Load model, extract per-layer hidden states and LM head projections."""
 
+import gc
 import os
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from transformer_lens import HookedTransformer
+from transformer_lens import HookedTransformer, HookedTransformerConfig
+from transformer_lens.loading_from_pretrained import (
+    convert_hf_model_config,
+    get_official_model_name,
+    get_pretrained_state_dict,
+)
 
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
@@ -17,41 +23,86 @@ CHECKPOINT_DIR = os.path.abspath(
 )
 
 
+def _find_local_path(model_id: str) -> str | None:
+    """Return the local directory path for *model_id* if it exists, else None."""
+    local_path = os.path.join(
+        CHECKPOINT_DIR, "models--" + model_id.replace("/", "--")
+    )
+    if os.path.isdir(local_path):
+        return local_path
+    hf_home = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
+    hf_path = os.path.join(hf_home, "hub", "models--" + model_id.replace("/", "--"))
+    if os.path.isdir(hf_path):
+        return hf_path
+    return None
+
+
 def load_model(
     device: str = "cuda",
     model_id: str = "Qwen/Qwen3-1.7B",
 ) -> HookedTransformer:
-    """Load a model via TransformerLens (offline-compatible)."""
-    # Resolve local path for HF transformers (handles flat checkpoints/ dir)
-    local_path = os.path.join(
-        CHECKPOINT_DIR, "models--" + model_id.replace("/", "--")
-    )
-    use_local = os.path.isdir(local_path)
-    load_path = local_path if use_local else model_id
+    """Load a model via TransformerLens (offline-compatible).
+
+    When a local checkpoint directory is found, the model is loaded directly
+    from disk and a HookedTransformer is constructed from the pre-loaded
+    HuggingFace model, bypassing the cache-lookup path entirely.
+    """
+    local_path = _find_local_path(model_id)
+    load_path = local_path if local_path else model_id
 
     hf_model = AutoModelForCausalLM.from_pretrained(
         load_path,
-        cache_dir=CHECKPOINT_DIR,
         trust_remote_code=True,
-        local_files_only=True,
+        local_files_only=(local_path is None),
         torch_dtype=torch.float16,
     )
     tokenizer = AutoTokenizer.from_pretrained(
         load_path,
-        cache_dir=CHECKPOINT_DIR,
         trust_remote_code=True,
-        local_files_only=True,
+        local_files_only=(local_path is None),
     )
-    # HookedTransformer needs official model name, but uses pre-loaded hf_model/tokenizer
-    model = HookedTransformer.from_pretrained(
-        model_id,
-        cache_dir=CHECKPOINT_DIR,
-        device=device,
-        trust_remote_code=True,
-        local_files_only=True,
-        hf_model=hf_model,
-        tokenizer=tokenizer,
-    )
+
+    if local_path is not None:
+        # Build HookedTransformer directly from the loaded hf_model to skip
+        # TransformerLens's internal AutoConfig lookup, which requires a
+        # standard HF cache structure (snapshots/ + refs/).
+        official_name = get_official_model_name(model_id)
+        cfg_dict = convert_hf_model_config(local_path, trust_remote_code=True)
+        cfg_dict["model_name"] = official_name.split("/")[-1]
+        cfg_dict["init_weights"] = False
+        if "original_architecture" not in cfg_dict:
+            cfg_dict["original_architecture"] = hf_model.config.architectures[0]
+        # Determine normalization type for fold_ln
+        if cfg_dict.get("normalization_type") in ("LN", "LNPre", None):
+            cfg_dict["normalization_type"] = "LNPre"
+        cfg = HookedTransformerConfig(**cfg_dict)
+        state_dict = get_pretrained_state_dict(
+            official_name, cfg, hf_model, dtype=torch.float16,
+        )
+        model = HookedTransformer(cfg, tokenizer, move_to_device=False)
+        model.load_and_process_state_dict(
+            state_dict,
+            fold_ln=True,
+            center_writing_weights=True,
+            center_unembed=True,
+            fold_value_biases=True,
+            refactor_factored_attn_matrices=False,
+        )
+        if device not in (None, "cpu"):
+            model.move_model_modules_to_device()
+        del hf_model
+        gc.collect()
+        torch.cuda.empty_cache()
+    else:
+        model = HookedTransformer.from_pretrained(
+            model_id,
+            device=device,
+            trust_remote_code=True,
+            local_files_only=True,
+            hf_model=hf_model,
+            tokenizer=tokenizer,
+        )
+
     model.eval()
     return model
 
