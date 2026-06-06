@@ -79,6 +79,12 @@ def load_model(
         state_dict = get_pretrained_state_dict(
             official_name, cfg, hf_model, dtype=torch.float16,
         )
+        # Free hf_model *before* creating HookedTransformer to avoid holding
+        # two full copies of weights in memory (hf_model + TL model = 32 GB).
+        del hf_model
+        gc.collect()
+        torch.cuda.empty_cache()
+
         model = HookedTransformer(cfg, tokenizer, move_to_device=False)
         model.load_and_process_state_dict(
             state_dict,
@@ -88,11 +94,10 @@ def load_model(
             fold_value_biases=True,
             refactor_factored_attn_matrices=False,
         )
+        del state_dict
+
         if device not in (None, "cpu"):
             model.move_model_modules_to_device()
-        del hf_model
-        gc.collect()
-        torch.cuda.empty_cache()
     else:
         model = HookedTransformer.from_pretrained(
             model_id,
