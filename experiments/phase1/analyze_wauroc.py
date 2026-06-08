@@ -24,10 +24,10 @@ def bootstrap_auroc(y_true, y_score, n_bootstrap=2000, ci=95):
             aurocs.append(roc_auc_score(y_true[idx], y_score[idx]))
         except ValueError:
             continue
-    aurocs = np.array(auroscs)
-    lo = np.percentile(auroscs, (100 - ci) / 2)
-    hi = np.percentile(auroscs, 100 - (100 - ci) / 2)
-    return np.mean(auroscs), lo, hi
+    aurocs = np.array(aurocs)
+    lo = np.percentile(aurocs, (100 - ci) / 2)
+    hi = np.percentile(aurocs, 100 - (100 - ci) / 2)
+    return np.mean(aurocs), lo, hi
 
 
 def compute_wauroc(labels, confidences, weights, n_bootstrap=2000):

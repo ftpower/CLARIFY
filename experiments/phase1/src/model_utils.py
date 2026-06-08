@@ -24,16 +24,30 @@ CHECKPOINT_DIR = os.path.abspath(
 
 
 def _find_local_path(model_id: str) -> str | None:
-    """Return the local directory path for *model_id* if it exists, else None."""
-    local_path = os.path.join(
-        CHECKPOINT_DIR, "models--" + model_id.replace("/", "--")
-    )
-    if os.path.isdir(local_path):
-        return local_path
-    hf_home = os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface"))
-    hf_path = os.path.join(hf_home, "hub", "models--" + model_id.replace("/", "--"))
-    if os.path.isdir(hf_path):
-        return hf_path
+    """Return the local directory path for *model_id* if it exists, else None.
+
+    Returns the directory that contains config.json (may be inside snapshots/).
+    """
+    for base in [
+        CHECKPOINT_DIR,
+        os.path.join(
+            os.environ.get("HF_HOME", os.path.expanduser("~/.cache/huggingface")),
+            "hub",
+        ),
+    ]:
+        local_path = os.path.join(base, "models--" + model_id.replace("/", "--"))
+        if not os.path.isdir(local_path):
+            continue
+        # If config.json is directly in local_path, use it
+        if os.path.isfile(os.path.join(local_path, "config.json")):
+            return local_path
+        # Otherwise try snapshots/<hash>/ subdirectory
+        snapshots_dir = os.path.join(local_path, "snapshots")
+        if os.path.isdir(snapshots_dir):
+            for snap in sorted(os.listdir(snapshots_dir)):
+                snap_path = os.path.join(snapshots_dir, snap)
+                if os.path.isfile(os.path.join(snap_path, "config.json")):
+                    return snap_path
     return None
 
 
@@ -53,13 +67,13 @@ def load_model(
     hf_model = AutoModelForCausalLM.from_pretrained(
         load_path,
         trust_remote_code=True,
-        local_files_only=(local_path is None),
+        local_files_only=True,
         torch_dtype=torch.float16,
     )
     tokenizer = AutoTokenizer.from_pretrained(
         load_path,
         trust_remote_code=True,
-        local_files_only=(local_path is None),
+        local_files_only=True,
     )
 
     if local_path is not None:
@@ -168,7 +182,7 @@ def get_per_layer_hidden_states(model: HookedTransformer, prompt: str):
 
     return (
         hidden_states,
-        logits_final[0, last_pos, :],
+        logits_final[0, last_pos, :].clone(),  # clone to free the full [1, seq, vocab] tensor
         generated_token_id,
         generated_text,
     )
@@ -196,27 +210,42 @@ def generate_token(
 
 
 def generate_answer(
-    model: HookedTransformer, prompt: str, max_new_tokens: int = 20
-) -> str:
+    model: HookedTransformer,
+    prompt: str,
+    max_new_tokens: int = 20,
+    return_seq_prob: bool = False,
+) -> str | tuple[str, float]:
     """Generate a multi-token answer via greedy decoding (no hidden state extraction).
 
     Returns decoded answer text (does NOT include the prompt).
+    If return_seq_prob, also returns exp(average log-prob of generated tokens).
     """
     tokens = model.to_tokens(prompt, prepend_bos=True)
     if tokens.shape[1] > 1024:
         tokens = tokens[:, :1024]
     prompt_len = tokens.shape[1]
 
+    log_probs = []
     with torch.no_grad():
         for _ in range(max_new_tokens):
             logits = model(tokens)
             next_id = logits[0, -1, :].argmax(dim=-1)
+            if return_seq_prob:
+                token_log_probs = torch.log_softmax(logits[0, -1, :], dim=-1)
+                log_probs.append(token_log_probs[next_id].item())
             tokens = torch.cat([tokens, next_id.unsqueeze(0).unsqueeze(0)], dim=-1)
             if next_id.item() == model.tokenizer.eos_token_id:
                 break
 
     new_ids = tokens[0, prompt_len:]
-    return model.tokenizer.decode(new_ids).strip()
+    answer = model.tokenizer.decode(new_ids).strip()
+
+    if return_seq_prob:
+        if log_probs:
+            avg_log_prob = sum(log_probs) / len(log_probs)
+            return answer, float(np.exp(avg_log_prob))
+        return answer, 0.0
+    return answer
 
 
 def get_confidence_dot(
@@ -295,18 +324,96 @@ def compute_ece(confidences: np.ndarray, labels: np.ndarray, n_bins: int = 15) -
     return float(ece)
 
 
-def compute_p_correct(logits: torch.Tensor, answers: list[str], tokenizer) -> float:
+def compute_alias_seq_prob(
+    model: HookedTransformer,
+    prompt: str,
+    aliases: list[str],
+    tokenizer,
+    logits_final: torch.Tensor,
+) -> float:
+    """Compute max sequence probability across correct answer aliases.
+
+    For QA datasets: P(correct) = max_{alias} exp(mean log P(token | prefix)).
+    Uses logits_final for the first token of each alias (no extra forward pass),
+    then runs forward passes for subsequent tokens.
+
+    Returns a float in [0, 1], comparable to the seq_prob from generate_answer.
+    """
+    prompt_tokens = model.to_tokens(prompt, prepend_bos=True)
+    max_seq_len = 1024
+    if prompt_tokens.shape[1] > max_seq_len:
+        prompt_tokens = prompt_tokens[:, :max_seq_len]
+    device = logits_final.device
+
+    max_prob = 0.0
+    for alias in aliases:
+        alias_ids = tokenizer.encode(alias, add_special_tokens=False)
+        if not alias_ids:
+            continue
+
+        log_prob_sum = 0.0
+        current_tokens = prompt_tokens.clone()
+
+        for i, tok_id in enumerate(alias_ids):
+            if i == 0:
+                # First token: use pre-computed logits_final (no forward pass needed)
+                token_log_probs = torch.log_softmax(logits_final, dim=-1)
+                log_prob_sum += token_log_probs[tok_id].item()
+            else:
+                # Subsequent tokens: run forward pass on extended sequence
+                if current_tokens.shape[1] >= max_seq_len:
+                    break  # stop extending if at length limit
+                with torch.no_grad():
+                    logits = model(current_tokens)
+                token_log_probs = torch.log_softmax(logits[0, -1, :], dim=-1)
+                log_prob_sum += token_log_probs[tok_id].item()
+
+            # Extend sequence for next iteration
+            tok_tensor = torch.tensor([[tok_id]], device=device)
+            current_tokens = torch.cat([current_tokens, tok_tensor], dim=-1)
+
+        avg_log_prob = log_prob_sum / len(alias_ids)
+        prob = float(np.exp(avg_log_prob))
+        if prob > max_prob:
+            max_prob = prob
+
+    return max_prob
+
+
+def compute_p_correct(
+    logits: torch.Tensor, answers: list[str], tokenizer, dataset: str = "triviaqa"
+) -> float:
     """Approximate P(correct_answer | final_logits) as knowledge proxy.
 
-    Tokenizes each answer alias and returns the max softmax probability
-    across all single-token continuations. Used as sample weight in wAUROC.
+    HellaSwag: 4-way softmax over label letters A/B/C/D, returns P(correct_letter).
+    QA datasets: max softmax probability across all tokens in all answer aliases.
+    Used as sample weight in wAUROC.
     """
     probs = torch.softmax(logits, dim=-1)
+
+    if dataset == "hellaswag":
+        # answers[1] is the correct label letter (e.g., "A", "B", "C", "D")
+        label_letters = ["A", "B", "C", "D"]
+        correct_letter = answers[1].strip().upper()
+
+        letter_ids = []
+        for letter in label_letters:
+            ids = tokenizer.encode(letter, add_special_tokens=False)
+            if ids:
+                letter_ids.append(ids[0])
+
+        # Softmax over just the 4 label letters (normalized 4-way choice)
+        letter_logits = logits[letter_ids]  # [4]
+        letter_probs = torch.softmax(letter_logits, dim=-1)
+        correct_idx = label_letters.index(correct_letter)
+        return letter_probs[correct_idx].item()
+
+    # QA datasets: max P(token | prompt) across all tokens in all answer aliases
     max_p = 0.0
     for ans in answers:
         tokens = tokenizer.encode(ans, add_special_tokens=False)
-        if tokens:
-            p = probs[tokens[0]].item()
+        for tok in tokens:
+            p = probs[tok].item()
             if p > max_p:
                 max_p = p
     return max_p

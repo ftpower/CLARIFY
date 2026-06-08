@@ -72,12 +72,24 @@ def plot_distribution_overlap(confidences: list[dict], save_path: Path):
             ax.set_title(f"Layer {layer_idx} (insufficient data)")
             continue
 
+        # Skip if data has NaN/Inf or near-zero variance (triggers cholesky error)
+        if np.any(~np.isfinite(conf_c)) or np.any(~np.isfinite(conf_i)):
+            ax.set_title(f"Layer {layer_idx} (non-finite data)")
+            continue
+        if np.std(conf_c) < 1e-12 or np.std(conf_i) < 1e-12:
+            ax.set_title(f"Layer {layer_idx} (zero variance)")
+            continue
+
         x_min = max(0, min(conf_c.min(), conf_i.min()) - 0.01)
         x_max = min(1, max(conf_c.max(), conf_i.max()) + 0.05)
         grid = np.linspace(x_min, x_max, 200)
 
-        kde_c = gaussian_kde(conf_c, bw_method="scott")
-        kde_i = gaussian_kde(conf_i, bw_method="scott")
+        try:
+            kde_c = gaussian_kde(conf_c, bw_method="scott")
+            kde_i = gaussian_kde(conf_i, bw_method="scott")
+        except (np.linalg.LinAlgError, ValueError):
+            ax.set_title(f"Layer {layer_idx} (KDE failed)")
+            continue
         p_c = kde_c(grid)
         p_i = kde_i(grid)
 

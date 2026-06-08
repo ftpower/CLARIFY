@@ -6,12 +6,15 @@ from sklearn.metrics import roc_auc_score
 
 
 def _safe_kde(data: np.ndarray):
-    """Fit a gaussian_kde, returning None if data variance is too low."""
-    if np.std(data) < 1e-12:
+    """Fit a gaussian_kde, returning None if data is unsuitable (low variance, NaN, Inf)."""
+    data = np.asarray(data, dtype=np.float64)
+    if len(data) < 3 or np.std(data) < 1e-12:
+        return None
+    if np.any(~np.isfinite(data)):
         return None
     try:
         return gaussian_kde(data, bw_method='scott')
-    except np.linalg.LinAlgError:
+    except (np.linalg.LinAlgError, ValueError):
         return None
 
 

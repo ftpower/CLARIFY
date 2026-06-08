@@ -34,6 +34,7 @@ from src.model_utils import (
     get_confidence_cosine,
     calibrate_temperatures,
     compute_p_correct,
+    compute_alias_seq_prob,
     generate_answer,
 )
 from src.estimators import compute_all_estimators
@@ -179,7 +180,19 @@ def main(
             incorrect_count += 1
 
         # Compute P(correct | final_logits) as knowledge proxy for wAUROC
-        p_c = compute_p_correct(logits_final, answers, model.tokenizer)
+        if dataset in ("triviaqa", "squad"):
+            # Free GPU memory from get_per_layer_hidden_states + generate_answer
+            # before running additional forward passes for alias sequence probability
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
+            p_c = compute_alias_seq_prob(
+                model, prompt, answers, model.tokenizer, logits_final
+            )
+        else:
+            p_c = compute_p_correct(
+                logits_final, answers, model.tokenizer, dataset="hellaswag"
+            )
         p_correct_values.append(p_c)
         generated_texts.append(answer_text)
 
