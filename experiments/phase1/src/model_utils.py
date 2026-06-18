@@ -248,6 +248,74 @@ def generate_answer(
     return answer
 
 
+# ---------------------------------------------------------------------------
+# Intervention hook builders & hooked generation
+# ---------------------------------------------------------------------------
+
+
+def make_noise_hook(std: float):
+    """Return a hook that adds Gaussian noise N(0, std^2) to activations.
+
+    Hook contract: (activation: Tensor, hook: HookPoint) -> Tensor.
+    """
+    def hook(activation: torch.Tensor, hook) -> torch.Tensor:
+        return activation + torch.randn_like(activation, device=activation.device) * std
+    return hook
+
+
+def make_scale_hook(alpha: float):
+    """Return a hook that scales activations by alpha.
+
+    alpha=1.0 is identity; alpha=0.0 zeros the activation.
+    """
+    def hook(activation: torch.Tensor, hook) -> torch.Tensor:
+        return activation * alpha
+    return hook
+
+
+def make_store_hook(storage_dict: dict, key: str | int):
+    """Return a hook that stores activation at last position (pass-through).
+
+    Returns None so the activation flows through unchanged.
+    """
+    def hook(activation: torch.Tensor, hook):
+        storage_dict[key] = activation.detach().cpu()
+        return None
+    return hook
+
+
+def generate_answer_with_hooks(
+    model,
+    prompt: str,
+    fwd_hooks: list,
+    max_new_tokens: int = 20,
+) -> str:
+    """Generate multi-token answer with hooks active on every forward pass.
+
+    Uses model.hooks() context so hooks fire on every model(tokens) call inside
+    the autoregressive loop. Used for intervention experiments where we need to
+    modify activations during generation.
+
+    Returns decoded answer text (does NOT include the prompt).
+    """
+    tokens = model.to_tokens(prompt, prepend_bos=True)
+    if tokens.shape[1] > 1024:
+        tokens = tokens[:, :1024]
+    prompt_len = tokens.shape[1]
+
+    with model.hooks(fwd_hooks=fwd_hooks):
+        with torch.no_grad():
+            for _ in range(max_new_tokens):
+                logits = model(tokens)
+                next_id = logits[0, -1, :].argmax(dim=-1)
+                tokens = torch.cat([tokens, next_id.unsqueeze(0).unsqueeze(0)], dim=-1)
+                if next_id.item() == model.tokenizer.eos_token_id:
+                    break
+
+    new_ids = tokens[0, prompt_len:]
+    return model.tokenizer.decode(new_ids).strip()
+
+
 def get_confidence_dot(
     hidden_states: list[torch.Tensor],
     W_U: torch.Tensor,
