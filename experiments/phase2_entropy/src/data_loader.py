@@ -1,0 +1,104 @@
+"""Data loading: HellaSwag, TriviaQA, SQuAD."""
+
+from datasets import load_dataset
+
+
+def load_hellaswag(n_samples: int = 200, seed: int = 42):
+    ds = load_dataset("Rowan/hellaswag", split="validation", trust_remote_code=False)
+    ds = ds.shuffle(seed=seed).select(range(n_samples))
+
+    label_letters = ["A", "B", "C", "D"]
+    samples = []
+    for item in ds:
+        ctx = item["ctx"]
+        endings = item["endings"]
+        label = int(item["label"])
+        correct_ending = endings[label]
+        label_letter = label_letters[label]
+        choices_text = "\n".join(
+            f"{label_letters[i]}. {endings[i]}" for i in range(4)
+        )
+        samples.append({
+            "question": ctx,
+            "answers": [correct_ending, label_letter],
+            "context": choices_text,
+        })
+    return samples
+
+
+def load_triviaqa(n_samples: int = 200, seed: int = 42):
+    ds = load_dataset("trivia_qa", "rc", split="validation", trust_remote_code=False)
+    ds = ds.shuffle(seed=seed).select(range(n_samples))
+
+    samples = []
+    for item in ds:
+        question = item["question"]
+        answers = item["answer"]["aliases"]
+        search_contexts = item["search_results"]["search_context"]
+        context = "\n\n".join(ctx for ctx in search_contexts if ctx)
+        samples.append({"question": question, "answers": answers, "context": context})
+    return samples
+
+
+def load_squad(n_samples: int = 200, seed: int = 42):
+    ds = load_dataset("squad_v2", split="validation", trust_remote_code=False)
+    ds = ds.filter(lambda x: len(x["answers"]["text"]) > 0)
+    ds = ds.shuffle(seed=seed).select(range(n_samples))
+
+    samples = []
+    for item in ds:
+        samples.append({
+            "question": item["question"],
+            "answers": item["answers"]["text"],
+            "context": item["context"],
+        })
+    return samples
+
+
+def format_prompt(question: str, context: str = "", dataset: str = "hellaswag") -> str:
+    if dataset == "hellaswag":
+        return (
+            f"Complete the sentence with the most natural ending. "
+            f"Answer with a single letter A, B, C, or D.\n\n"
+            f"Context: {question}\n"
+            f"{context}\n\n"
+            f"Answer:"
+        )
+    if dataset == "squad":
+        return (
+            f"Read the passage and answer the question with a short phrase.\n\n"
+            f"Passage: {context}\n\n"
+            f"Question: {question}\n\n"
+            f"Answer:"
+        )
+    if context:
+        return (
+            f"Based on the provided context, answer the question with a single word "
+            f"or short phrase.\n\n"
+            f"Context: {context}\n\n"
+            f"Question: {question}\n\n"
+            f"Answer:"
+        )
+    return (
+        f"Answer the question with a single word or short phrase.\n\n"
+        f"Question: {question}\n\n"
+        f"Answer:"
+    )
+
+
+def check_correct(prediction: str, answers: list[str], dataset: str = "hellaswag") -> bool:
+    pred_lower = prediction.strip().lower()
+    if dataset == "hellaswag":
+        pred_letter = pred_lower[0] if pred_lower else ""
+        label_letter = answers[1].lower()
+        return pred_letter == label_letter
+    pred_words = set(pred_lower.split())
+    for ans in answers:
+        ans_lower = ans.lower().strip()
+        ans_words = set(ans_lower.split())
+        if ans_words & pred_words:
+            return True
+        if len(pred_lower) >= 3 and len(ans_lower) >= 3:
+            if ans_lower in pred_lower or pred_lower in ans_lower:
+                return True
+    return False
