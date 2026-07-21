@@ -112,7 +112,7 @@ def extract_choice_probs_8b(
             all_maxp[idx, li] = probs.max().item()
 
             choice_logits = logits_L[letter_toks]
-            choice_probs[idx, li, :] = torch.softmax(choice_logits, dim=-1).cpu().numpy()
+            choice_probs[idx, li, :] = torch.softmax(choice_logits, dim=-1).detach().cpu().numpy()
 
         # Correctness
         logits_last = logits[0, last_pos, :]
