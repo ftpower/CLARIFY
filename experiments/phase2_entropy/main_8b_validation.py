@@ -687,7 +687,7 @@ def run_s1(model, output_dir, d2_result, i1_result, args):
 
         # max_p from final logit lens
         h_final = storage[f"L{n_layers - 1}"][0, last_pos, :].to(W_U.device)
-        max_p_val = float(F.softmax((h_final @ W_U).float(), dim=-1).max())
+        max_p_val = float(F.softmax((h_final @ W_U).float(), dim=-1).detach().max())
 
         logits_last = logits[0, last_pos, :]
         choice_probs = F.softmax(logits_last[letter_toks].float(), dim=-1)
