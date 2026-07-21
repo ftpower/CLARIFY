@@ -667,8 +667,8 @@ def run_s1(model, output_dir, d2_result, i1_result, args):
         h_l = storage[f"L{js_late}"][0, last_pos, :].to(W_U.device)
         logits_e = h_e @ W_U
         logits_l = h_l @ W_U
-        p_e = F.softmax(logits_e[letter_toks].float(), dim=-1).cpu().numpy()
-        p_l = F.softmax(logits_l[letter_toks].float(), dim=-1).cpu().numpy()
+        p_e = F.softmax(logits_e[letter_toks].float(), dim=-1).detach().cpu().numpy()
+        p_l = F.softmax(logits_l[letter_toks].float(), dim=-1).detach().cpu().numpy()
         eps = 1e-10
         m = 0.5 * (p_e + p_l)
         js = float(
