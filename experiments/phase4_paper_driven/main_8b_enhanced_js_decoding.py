@@ -104,7 +104,7 @@ def extract_choice_probs_8b(
 
         for li in range(n_layers):
             h_last = storage[li][0, last_pos, :].to(W_U.device).float()
-            logits_L = h_last @ W_U
+            logits_L = h_last @ W_U.float()
             if b_U is not None:
                 logits_L = logits_L + b_U.to(W_U.device)
 
@@ -233,12 +233,12 @@ def evaluate_contrastive_decoding(
 
         # Logit lens: hidden → logits per layer
         h_early = storage["early"][0, last_pos, :].float()
-        logits_early = h_early @ W_U
+        logits_early = h_early @ W_U.float()
         if b_U is not None:
             logits_early = logits_early + b_U.to(W_U.device)
 
         h_late = storage["late"][0, last_pos, :].float()
-        logits_late = h_late @ W_U
+        logits_late = h_late @ W_U.float()
         if b_U is not None:
             logits_late = logits_late + b_U.to(W_U.device)
 
