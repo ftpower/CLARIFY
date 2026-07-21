@@ -385,8 +385,8 @@ def main():
         d_raw = compute_mean_diff(accum[L])
 
         # PCA-aligned direction (align with train subspace projector)
-        P = subspace_results[str(L)]["alignment_matrix"].to(d_raw.device)
-        d_aligned = (P @ d_raw)
+        P = subspace_results[str(L)]["alignment_matrix"].to(device=d_raw.device, dtype=torch.float32)
+        d_aligned = (P @ d_raw.float())
         d_aligned = d_aligned / (d_aligned.norm() + 1e-8)
 
         # Random direction (control)
