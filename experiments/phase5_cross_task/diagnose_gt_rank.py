@@ -63,17 +63,27 @@ def get_full_answer_token_ids(tokenizer, answer: str) -> list[int]:
 
 
 def diagnose_gt_rank(model, tokenizer, device: str,
-                     samples: list[dict], verbose: bool = True):
+                     samples: list[dict], max_prompt_len: int = 2048,
+                     verbose: bool = True):
     """For each sample, check rank of GT first token in predicted distribution.
 
     Strategy: one forward pass on the PROMPT ONLY. The logits at the last prompt
     position are the model's prediction for the first generated token.
+
+    Truncates prompts > max_prompt_len tokens to avoid OOM on long TriviaQA contexts.
     """
     results = []
+    n_truncated = 0
 
     for i, s in enumerate(tqdm(samples, desc="GT rank diagnostic")):
         prompt = format_prompt(s["question"], s["context"], dataset="triviaqa")
         token_ids = tokenizer.encode(prompt, add_special_tokens=False)
+
+        # Truncate: some TriviaQA search contexts are 800K+ chars → OOM on 8GB
+        if len(token_ids) > max_prompt_len:
+            token_ids = token_ids[:max_prompt_len]
+            n_truncated += 1
+
         prompt_tokens = torch.tensor([token_ids], dtype=torch.long,
                                      device=device)
         prompt_len = prompt_tokens.shape[1]
@@ -122,6 +132,8 @@ def diagnose_gt_rank(model, tokenizer, device: str,
             "prompt_len": prompt_len,
         })
 
+    if n_truncated > 0:
+        print(f"  Truncated {n_truncated}/{len(samples)} prompts to {max_prompt_len} tokens")
     return results
 
 
