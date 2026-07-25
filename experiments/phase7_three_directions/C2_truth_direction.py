@@ -97,8 +97,8 @@ def main():
     parser.add_argument("--n_samples", type=int, default=100)
     parser.add_argument("--model", type=str, default="Qwen/Qwen3-1.7B")
     parser.add_argument("--output_dir", type=str, default="outputs_phase7")
-    parser.add_argument("--layer", type=int, default=16,
-                        help="Layer to extract hidden states from")
+    parser.add_argument("--layer", type=int, default=-1,
+                        help="Layer to extract HS from (-1 = scan ALL layers)")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -121,59 +121,71 @@ def main():
 
     from src.data_loader import format_prompt, check_correct
     n_layers = model.cfg.n_layers
-    layers_to_scan = [args.layer] if args.layer >= 0 else range(0, n_layers, max(1, n_layers // 6))
+
+    # Resolve layers to scan
+    if args.layer >= 0:
+        layers_to_scan = [args.layer]
+    else:
+        # --layer -1: scan ALL layers (efficient: one FP captures all)
+        layers_to_scan = list(range(n_layers))
+        print(f"  Full-layer scan: {len(layers_to_scan)} layers (L0-L{n_layers-1})")
 
     # ── Extract hidden states + labels ──
+    # Key efficiency fix: hook ALL target layers on the FIRST generation forward pass.
+    # Before: generation (up to 20 FPs) + N_layers separate FPs → up to 20+N FPs/sample
+    # After:  generation with HS hooks on first FP → up to 20 FPs/sample (no extra cost)
     print(f"\nExtracting hidden states + generating labels...")
+    print(f"  Layers: {len(layers_to_scan)}, Samples: {args.n_samples}")
     t0 = time.time()
 
-    # Store per-layer hidden states
-    all_h = {li: [] for li in (layers_to_scan if isinstance(layers_to_scan, range)
-                                else [layers_to_scan])
-             } if isinstance(layers_to_scan, range) else {layers_to_scan[0]: []}
-
+    all_h = {li: [] for li in layers_to_scan}
     labels = []
     correct_count = 0
 
+    # Pre-build hook list for all target layers (shared across samples, rebuilt per sample
+    # since each hook captures into a per-sample residual dict)
     for s in tqdm(samples, desc="C2 extract HS"):
         prompt = format_prompt(s["question"], s["context"], dataset="triviaqa")
-
-        # Generate answer for label
         tokens = model.to_tokens(prompt, prepend_bos=True)
         if tokens.shape[1] > 1024:
             tokens = tokens[:, :1024]
-        gids = []
-        for _ in range(20):
+
+        # ── First forward pass: extract HS from ALL target layers + get first token ──
+        residual = {}
+        fwd_hooks = []
+        for li in layers_to_scan:
+            # Capture li by default-arg binding (not closure — avoids late-binding bug)
+            def _hook(act, hook=None, _layer=li):
+                residual[_layer] = act[:, -1, :].detach()
+                return act
+            fwd_hooks.append((f"blocks.{li}.hook_resid_post", _hook))
+
+        with torch.no_grad():
+            logits = model.run_with_hooks(tokens, fwd_hooks=fwd_hooks)
+
+        # Store hidden states for all layers
+        for li in layers_to_scan:
+            all_h[li].append(residual[li].float().cpu().numpy().flatten())
+
+        # Get first generated token
+        nid = int(logits[0, -1, :].argmax().item())
+        gids = [nid]
+
+        # ── Continue autoregressive generation (no hooks needed) ──
+        for _ in range(19):  # max 19 more tokens (20 total)
+            if nid == tokenizer.eos_token_id:
+                break
+            tokens = torch.cat([tokens, torch.tensor([[nid]], device=device)], dim=1)
             with torch.no_grad():
                 logits = model(tokens)
             nid = int(logits[0, -1, :].argmax().item())
             gids.append(nid)
-            if nid == tokenizer.eos_token_id:
-                break
-            tokens = torch.cat([tokens, torch.tensor([[nid]], device=device)], dim=1)
+
         ans = tokenizer.decode(gids).strip()
         is_correct = check_correct(ans, s["answers"], dataset="triviaqa")
         if is_correct:
             correct_count += 1
         labels.append(1 if is_correct else 0)
-
-        # Extract hidden states at target layer(s)
-        for li in all_h:
-            # Re-tokenize (generation modified tokens)
-            tokens2 = model.to_tokens(prompt, prepend_bos=True)
-            if tokens2.shape[1] > 1024:
-                tokens2 = tokens2[:, :1024]
-            residual = {}
-
-            def _make_hook(name):
-                def hook(act, hook=None, **kwargs):
-                    residual[name] = act[:, -1, :].detach()
-                return hook
-
-            fwd_hooks = [(f"blocks.{li}.hook_resid_post", _make_hook("h"))]
-            with torch.no_grad():
-                model.run_with_hooks(tokens2, fwd_hooks=fwd_hooks)
-            all_h[li].append(residual["h"].float().cpu().numpy().flatten())
 
     labels = np.array(labels)
     print(f"  Correct: {correct_count}/{len(samples)} ({correct_count/len(samples):.1%})")
