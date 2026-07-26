@@ -8,8 +8,18 @@
 
 ## Environment
 
+### 本地 (WSL2)
 Conda: `pytorch_env0` | Python: 3.10 | PyTorch: 2.12 | CUDA: 12.8
-Local GPU: RTX 5060 8GB | Server: AutoDL RTX 5090 32GB
+GPU: RTX 5060 8GB
+
+### AutoDL 服务器
+Conda: `base` (miniconda3) | CUDA: 13.0
+GPU: RTX 5090 32GB | CPU: 25 核 | RAM: 90 GB
+系统盘: 30G (`/`) | 数据盘: 50G (`/root/autodl-tmp`，IO 更快)
+项目路径: `/root/CLARIFY`
+模型缓存: `~/.cache/huggingface/hub/`
+长期执行命令用 `screen` 或 `tmux`，防 SSH 断开中断
+代码同步: 本地修改 → Claude 负责 commit → 用户 push → 服务器 `git pull`
 
 ## Key Conventions
 
