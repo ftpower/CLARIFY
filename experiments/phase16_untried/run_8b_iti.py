@@ -161,7 +161,7 @@ def evaluate_iti(model, tokenizer, test_records, device, layer, top_k_probes, al
     for rec in test_records:
         question = rec["question"]
         context = rec.get("context", "")
-        answers = rec["answers"]
+        answers = rec.get("gt_answers") or rec.get("answers") or rec["gt_answer"]
         prompt = format_prompt(question, context, dataset="triviaqa")
         tokens = model.to_tokens(prompt, prepend_bos=True)
         if tokens.shape[1] > 1024:
@@ -361,7 +361,7 @@ def main():
     for rec in tqdm(test_records, desc="  Baseline"):
         question = rec["question"]
         context = rec.get("context", "")
-        answers = rec["answers"]
+        answers = rec.get("gt_answers") or rec.get("answers") or rec["gt_answer"]
         prompt = format_prompt(question, context, dataset="triviaqa")
         tokens = model.to_tokens(prompt, prepend_bos=True)
         if tokens.shape[1] > 1024:
