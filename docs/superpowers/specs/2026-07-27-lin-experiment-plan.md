@@ -33,15 +33,6 @@ Phase B3: LIN 推理时干预           8B AutoDL, 1-2 h  → ⏸ 待决定
 **原 Gate (P1+P2)**: P1 失败，P2 通过 → 形式上未通过。但 P1 的失败本身是重要发现——修正了核心假说。
 
 **新洞察**: P3 是关键——即使使用神谕梯度 g_L，单层干预在 L27 仍然零效应。这证明**问题不是方向选择（v vs g），而是单层 shift 范式本身的因果局限**。
-1. 对 10 个 test sample，用 `torch.autograd` 计算 $J_\ell = \partial \text{logits} / \partial h_\ell$
-2. 算 $\|J_\ell v\|_2 / (\|J_\ell\|_F \cdot \|v\|_2)$ 比率
-3. 若比率 $< 0.05$ → P1 成立
-
-**文件**: `experiments/lin_theory/validate_p1_jacobian.py`
-
-### P2 — 梯度与 v 的低相似度
-
-**预测**: $\cos(g_\ell, v) \approx 0$（梯度方向与均值差方向正交）
 
 **代码**: `experiments/lin_theory/validate_p*.py`
 
@@ -55,13 +46,66 @@ Phase B3: LIN 推理时干预           8B AutoDL, 1-2 h  → ⏸ 待决定
 
 ---
 
+## Phase A.5: 补充验证实验（2026-07-28 下午）
+
+> 基于 `docs/theory-intervention-failure.md` Section 11 的缺口分析。
+> **平台**: 本地 RTX 5060 8GB | Qwen3-1.7B
+
+### A.5.1 — Δ log P 诊断 🔴
+
+**目标**: 判断 g 干预是否至少增加了 P(y_true)，即使 argmax 未翻转。
+
+**方法**: 对 P3 的 30 test sample，额外记录干预前后的 log P(y_true)：
+$$\Delta \log P = \log P(y_{\text{true}} | h + \alpha g) - \log P(y_{\text{true}} | h)$$
+
+**预期**: 若一阶近似有效，$\Delta \log P \approx \alpha \cdot \|g\|^2 \approx \alpha \cdot 3.7$ nats
+
+**Gate**: 
+- $\Delta \log P > 1.0$ nats → 方向正确，幅度问题
+- $\Delta \log P < 0.5$ nats → 一阶近似失效
+
+**文件**: `experiments/lin_theory/validate_p3_logprob.py`（新增）
+
+**预计时间**: 10 min
+
+---
+
+### A.5.2 — 幅度校准 🔴
+
+**目标**: 确定线性近似成立的 α 范围，找到 argmax 翻转所需的最小 α。
+
+**方法**:
+1. 测量 h 在 L20 和 L27 的范数分布
+2. Sweep α ∈ {±0.5, ±1.0, ±2.0, ±5.0, ±10.0}，测量 Δ log P vs α 的线性度
+3. 以 5 个 sample 做快速 sweep，找到线性近似崩溃的 α 值
+
+**Gate**: 若 α ≥ 5.0 时 Δ log P 仍线性增长但 argmax 不变 → 论证"argmax 的固有鲁棒性"。若在 α < 3.0 时 Δ log P 已偏离线性 → 一阶近似在此范围外不适用。
+
+**预计时间**: 15 min
+
+---
+
+### A.5.3 — 层依赖性 🔴
+
+**目标**: 测试 g 干预在不同层的效果差异。
+
+**方法**: 对 L15, L20, L27 分别用 g 做单层干预（α scan），对比 Δ accuracy 和 Δ log P。
+
+**层选择**: L15（早期）、L20（检测最强）、L27（最后层）
+
+**预期**: 若 L20 > L27 > L15 → 检测信号强度与干预效应正相关。若 L27 > L20 → 离输出越近效应越大。若三者均为 0 → 单层 shift 在所有层都无效。
+
+**预计时间**: 30 min
+
+---
+
 ## Phase B1: 梯度数据集构建（可选）
 
 **目标**: 对 8B 模型，构建 $(\{h_\ell\}, \{g_\ell\})$ 训练数据集。
 
 **平台**: AutoDL RTX 5090 32GB | Qwen3-8B
 
-**⚠️ P3 结果提示**: L27 的神谕梯度 g_L 单层干预 Δ=0%。B1 数据集仍可构建（用于分析 g 的多层结构），但 B3 的干预评估预期大幅下调。
+**⚠️ Phase A 结果提示**: L27 的神谕梯度 g_L 单层干预 Δ=0%。B1 数据集仍可构建（用于分析 g 的多层结构），但 B3 的干预评估预期大幅下调。**Phase A.5 完成后重新评估是否需要执行 B1。**
 
 ### 数据源
 
