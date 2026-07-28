@@ -1,33 +1,38 @@
 # Learned Intervention Network (LIN) — 完整实验方案
 
-> 2026-07-27 下午启动 | 基于 `docs/theory-intervention-failure.md` 理论推导
+> 2026-07-27 启动 | 2026-07-28 Phase A 完成 | 基于 `docs/theory-intervention-failure.md` 理论推导
 
 ---
 
 ## 阶段总览
 
 ```
-Phase A: 理论验证 (P1-P5)        本地 1.7B, 30 min  → 证实 g vs v 的区别
-Phase B1: 梯度数据集构建          8B AutoDL, 2-3 h  → 5层 × 200K 样本
-Phase B2: LIN 训练                本地/任意, 1 h    → 75K 参数回归
-Phase B3: LIN 推理时干预           8B AutoDL, 1-2 h  → 核心评估
+Phase A: 理论验证 (P1-P5)        本地 1.7B, 30 min  → ✅ 完成 (P2/P4 确认, P1/P3 修正理论)
+Phase B1: 梯度数据集构建          8B AutoDL, 2-3 h  → ⏸ 待决定
+Phase B2: LIN 训练                本地/任意, 1 h    → ⏸ 待决定
+Phase B3: LIN 推理时干预           8B AutoDL, 1-2 h  → ⏸ 待决定
 ```
 
-**Gate rule**: 每个 Phase 必须达到指定标准才能进入下一个 Phase。
+**Gate rule**: Phase A 完成后根据实验结果重新评估 Phase B 的必要性。
 
 ---
 
-## Phase A: 理论验证 (P1-P3 + P4)
+## Phase A: 理论验证 — ✅ 完成 (2026-07-28)
 
-**目标**: 用最小成本验证理论推导的 3 个核心预测。
+### 实验结果
 
-**平台**: 本地 RTX 5060 8GB | Qwen3-1.7B | 已有 200 sample TriviaQA extraction
+| 预测 | 原假说 | 实测 | 结论 |
+|------|--------|------|------|
+| P1 | \|\|Jv\|\| ≪ \|\|Jr\|\| | 1.05 ± 0.14 | ❌ v 不在零空间，但在非有益子空间 |
+| P2 | cos(g, v) ≈ 0 | 0.0184 (≈ random 0.0176) | ✅ 确认 |
+| P3 | g 干预 > v 干预 | 两者均为 Δ=0.0% | ❌ 单层 shift 范式根本不足 |
+| P4 | g 低秩 | effective_rank=38 | ✅ 确认 |
 
-### P1 — Jacobian-方向正交性
+### Gate 结果与解读
 
-**预测**: $\|J_\ell v\| \ll \|J_\ell\|_F \cdot \|v\|$（$v$ 在 Jacobian 近零空间中）
+**原 Gate (P1+P2)**: P1 失败，P2 通过 → 形式上未通过。但 P1 的失败本身是重要发现——修正了核心假说。
 
-**方法**:
+**新洞察**: P3 是关键——即使使用神谕梯度 g_L，单层干预在 L27 仍然零效应。这证明**问题不是方向选择（v vs g），而是单层 shift 范式本身的因果局限**。
 1. 对 10 个 test sample，用 `torch.autograd` 计算 $J_\ell = \partial \text{logits} / \partial h_\ell$
 2. 算 $\|J_\ell v\|_2 / (\|J_\ell\|_F \cdot \|v\|_2)$ 比率
 3. 若比率 $< 0.05$ → P1 成立
@@ -38,37 +43,25 @@ Phase B3: LIN 推理时干预           8B AutoDL, 1-2 h  → 核心评估
 
 **预测**: $\cos(g_\ell, v) \approx 0$（梯度方向与均值差方向正交）
 
-**方法**:
-1. 对 20 个 training sample，反向传播算 $g_\ell = \nabla_{h_\ell} \log P(y_{\text{true}}|h_\ell)$
-2. 计算 $\cos(g_\ell, v)$ 分布和均值
-3. 若 $|\cos| < 0.1$ → P2 成立
+**代码**: `experiments/lin_theory/validate_p*.py`
 
-**文件**: `experiments/lin_theory/validate_p2_cosine.py`
+详细结果见 `docs/theory-intervention-failure.md` Section 8 和 `experiments/outputs/lin_theory/p*_results.json`。
 
-### P3 — 梯度方向的控制效应
+### Gate 结果
 
-**预测**: 用 $g_\ell$ 做单层 shift 的有效性 > 用 $v$
+**原 Gate (P1+P2)**: P1 失败 (\|\|Jv\|\|/\|\|Jr\|\|=1.05, need <0.1)，但 P1 的失败是理论修正而非实验失败。最有价值的发现是 P3（神谕梯度也零效应）。
 
-**方法**:
-1. 对 50 test sample，用 $\delta = \alpha \cdot g_\ell / \|g_\ell\|$（$\alpha \in \{\pm 0.5, \pm 1.0\}$）做单层干预
-2. 对比用 $v$ 做同样干预的生成正确率变化
-3. 若任意 α 下 $g_\ell$ > $v$ 且 Δ > +5% → P3 成立
-
-**文件**: `experiments/lin_theory/validate_p3_gradient_intervention.py`
-
-### P4 (可选) — 梯度方向跨问题共享低维结构
-
-**方法**: 对 50 个样本的 $g_\ell$ 做 PCA，观察 top-k 主成分解释方差比
-
-**Gate 标准**: P1+P2 同时成立（P3 成立是加分）
+**后续决策**: Phase B 降级为探索性实验。LIN 仍可尝试（多层级联可能累积超越单层的因果效应），但预期下调至 30%。
 
 ---
 
-## Phase B1: 梯度数据集构建
+## Phase B1: 梯度数据集构建（可选）
 
 **目标**: 对 8B 模型，构建 $(\{h_\ell\}, \{g_\ell\})$ 训练数据集。
 
 **平台**: AutoDL RTX 5090 32GB | Qwen3-8B
+
+**⚠️ P3 结果提示**: L27 的神谕梯度 g_L 单层干预 Δ=0%。B1 数据集仍可构建（用于分析 g 的多层结构），但 B3 的干预评估预期大幅下调。
 
 ### 数据源
 
@@ -265,24 +258,29 @@ experiments/lin_theory/
 
 | 风险 | 概率 | Fallback |
 |------|------|---------|
-| P1/P2 假设不成立（v 和 g 高度相似） | 15% | 重新审视理论，检查 1.7B vs 8B 差异 |
-| P3 用 g 仍然零效应 | 20% | 一阶近似不足，需要在线 RL 优化（PPO/DPO） |
+| ~~P1/P2 假设不成立~~ | ~~15%~~ | **P1 已确认不成立** → 理论已修正（非零空间 → 非有益子空间） |
+| ~~P3 用 g 仍然零效应~~ | ~~20%~~ | **P3 已确认零效应** → 单层 shift 范式本身不足。Phase B 如执行，需用多层级联 + 大幅调低预期 |
 | B1 梯度退化（太多样本 g≈0） | 25% | 过滤"不知道"样本，只用已知样本训练 |
-| B3 LIN 零效应 | 30% | 增大 r、换层、加在线 fine-tuning、或论断"推理时干预不可行" |
+| B3 LIN 零效应 | **70%** (上调) | P3 结果表明单层 g 干预已零效应，多层级联可能仍不足。最可能结论："推理时激活干预在这一模型族上不可行" |
 | VRAM 不足 | 10% | 减 batch、用 gradient checkpointing |
 
----
+**新增风险：线性 vs 非线性效应** (20%): g 是一阶最优，但 argmax 翻转可能需要二阶或更高阶的修正（考虑 logit 空间的曲率）。P3 结果暗示纯一阶方向不足。
 
-## 论文叙事（预演）
 
-如果 LIN 成功（B3 gate 通过）：
+## 论文叙事（更新版，2026-07-28）
 
-> 我们发现传统的 truth direction v 在 Jacobian 的控制零空间中，解释了此前 10+ 种干预范式的全部零效应。基于梯度-控制对偶性，我们提出了 Learned Intervention Network (LIN)——一个轻量级修正网络（~90K 参数），通过摊销梯度计算学习可泛化的控制方向。在 Qwen3-8B 上的实验表明，LIN 使 TriviaQA 正确率从 62% 提升至 XX%，是首个在推理时有效抑制 LLM 幻觉的实用方法。
+### 推荐方向：负面结果 + 系统性分析
 
-如果 LIN 也失败（B3 未通过 gate）：
+基于 Phase A 结果，推荐以"为什么推理时激活干预不可行"为核心叙事：
 
-> 我们的理论和实验共同证明：推理时向残差流注入修正——无论方向是手工（v）还是学习的（LIN）——都无法在因果上影响 LLM 的输出。truthfulness 信号存在于读出子空间中，但其控制需要改变模型的计算电路（权重或路由），而非激活值。这为未来工作指明了方向：基于权重编辑的推理时干预、或训练时的事实对齐（truthfulness fine-tuning）。
+> 我们系统性地分析了 10+ 种推理时激活干预方法在 LLM 幻觉抑制上的失效原因。实验涵盖 1.7B 和 8B 两个模型规模，证明了三点：
+>
+> 1. **检测可行 ≠ 干预可行**：Truth direction v 在各层的 AUROC 达到 0.88-0.93，但沿 v 的单层/级联/几何干预全部零效应（Δ ≈ 0）
+> 2. **不是方向选择问题**：即使使用神谕梯度 g（一阶最优方向，知道正确答案），单层干预仍然零效应。g 和 v 近似正交（cos ≈ 0.018），但两者都无法翻转 argmax
+> 3. **单层修正的因果局限**：残差流中的激活修正——无论方向多精确——在因果上不足以改变自回归生成的输出。argmax 对中间层扰动的鲁棒性远高于预期
+>
+> 我们的发现为未来工作指明了方向：有效的幻觉抑制可能需要修改模型的计算电路（权重编辑、训练时对齐），而非推理时的激活 patch。
 
----
+### 如果 LIN 意外有效（概率 ~30%）
 
-*方案版本 v1.0, 2026-07-27 14:00*
+> 尽管单层神谕梯度干预失败，我们提出的 Learned Intervention Network (LIN) 通过多层级联修正累积了足够的因果效应，在 Qwen3-8B 上将 TriviaQA 正确率从 62% 提升至 XX%。这表明多层级联可以突破单层修正的局限。
