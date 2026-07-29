@@ -137,9 +137,19 @@ def compute_v(model, tokenizer, n_calibrate, device, layer, seed=42):
 
 
 def get_first_answer_token_id(tokenizer, answers):
-    """Return the first token ID of the first non-empty answer alias."""
+    """Return the first token ID of the first non-empty answer alias.
+
+    IMPORTANT: The model generates answer tokens with a leading space
+    (e.g., " Paris" not "Paris") because the prompt ends with "Answer:".
+    We prepend a space to match the actual generated token distribution.
+    We preserve the original case since tokenization is case-sensitive.
+    """
     for ans in answers:
-        tokens = tokenizer.encode(ans.lower().strip(), add_special_tokens=False)
+        ans_clean = ans.strip()
+        if not ans_clean:
+            continue
+        # Try with leading space (matches generation context after "Answer:")
+        tokens = tokenizer.encode(" " + ans_clean, add_special_tokens=False)
         if tokens:
             return int(tokens[0])
     return None

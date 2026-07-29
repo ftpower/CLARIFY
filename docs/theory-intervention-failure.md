@@ -624,3 +624,679 @@ $$\text{权重编辑}: h \to h, \quad J_\ell \to J'_\ell$$
 | 🔴 3 | 层依赖性 | L15/L20/L27 g 干预对比 | 30 min |
 | 🟡 4-6 | 机制/级联/权重 | 文字补充（无需实验） | 20 min |
 | 🟢 7-8 | RMSNorm/形式化 | 低优先级，后续处理 | — |
+
+---
+
+## 12. 空间转换：从隐藏空间干预到 Logit 空间干预
+
+> 基于 Phase A + A.5 的完整实验证据，本节推导一个全新的干预范式。
+> 核心论点：**检测和干预应该在不同的表示空间中进行。**
+
+### 12.1 问题形式化
+
+**定义 2（隐藏空间干预）.** 对选定层 $\ell$ 的最后 prompt token 位置：
+$$h_\ell \leftarrow h_\ell + \delta, \quad \delta \in \mathbb{R}^d$$
+
+模型继续前向传播：$h_\ell \to \text{RMSNorm} \to f_{>\ell} \to \text{RMSNorm} \to W_U \to \text{logits}$。
+
+**定义 3（Logit 空间干预）.** 对 logits 直接施加修正：
+$$\text{logits} \leftarrow \text{logits} + \delta_{\text{logit}}, \quad \delta_{\text{logit}} \in \mathbb{R}^{|\mathcal{V}|}$$
+
+然后 $\hat{y} = \arg\max(\text{softmax}(\text{logits} + \delta_{\text{logit}}))$。
+
+**核心问题**: 给定检测信号 $s(h) \in \mathbb{R}$（如 $\langle v, h \rangle$），在哪个空间施加修正 $\delta$ 能在因果上最有效地改变 $\arg\max$？
+
+### 12.2 隐藏空间干预的失效分析（完整版）
+
+Phase A+A.5 已经量化了隐藏空间干预链上的每一步衰减：
+
+$$\Delta \text{logits} = J_{\text{RMSNorm}}^{(L)} \cdot J_{\text{transformer}} \cdot J_{\text{RMSNorm}}^{(\ell)} \cdot \delta$$
+
+其中：
+- $J_{\text{RMSNorm}}^{(\ell)} \cdot \delta$：层 $\ell$ 的 RMSNorm 将 $\delta$ 缩放约 $g/\text{RMS}(h_\ell) \approx 1/45$
+- $J_{\text{transformer}}$：下游 Transformer 层对信号的（可能衰减的）传播
+- $J_{\text{RMSNorm}}^{(L)}$：最终 RMSNorm 的进一步缩放
+
+A.5.2 实验确认：对于 $\|\delta\| = 1$（沿梯度方向），$\Delta \log P(y_{\text{true}}) \approx 0.084$ nats。而一阶理论预测（忽略两个 RMSNorm Jacobian）为 ~3.7 nats。衰减因子 ~44x 与 RMSNorm 的 $g/\text{RMS}(h)$ 因子一致。
+
+**关键结论**: 隐藏空间干预的衰减不是"非线性崩溃"（A.5.2 证明线性完美），而是**恒定的乘法衰减**。衰减来自 RMSNorm 的数学结构，不是来自方向选择错误。
+
+### 12.3 Logit 空间 Truth Direction
+
+**定义 4（Logit 空间 truth direction）.** 
+$$v_{\text{logit}} = \mathbb{E}_{(x,y) \sim \mathcal{D}_{\text{correct}}}[\text{logits}(x)] - \mathbb{E}_{(x,y) \sim \mathcal{D}_{\text{wrong}}}[\text{logits}(x)]$$
+
+其中 $\text{logits}(x) = W_U \cdot \text{RMSNorm}(h_L(x)) \in \mathbb{R}^{|\mathcal{V}|}$ 是模型在最后 prompt token 位置的输出 logits。
+
+**性质 1（线性等价）.** 若模型在 $h_L$ 到 logits 之间是线性的（即 $\text{RMSNorm}$ 是恒等映射），则：
+$$v_{\text{logit}} = W_U \cdot v_{\text{hidden}}$$
+
+其中 $v_{\text{hidden}} = \mathbb{E}[h_L | \text{correct}] - \mathbb{E}[h_L | \text{wrong}]$。
+
+**性质 2（RMSNorm 非线性带来的信息增益）.** 在实际模型中，$v_{\text{logit}} \neq W_U \cdot v_{\text{hidden}}$。$v_{\text{logit}}$ 编码了 RMSNorm 非线性变换后的实际输出模式，因此比 $W_U \cdot v_{\text{hidden}}$ 包含更多信息。
+
+### 12.4 为什么 Logit 空间干预应该有效
+
+**论据 1: 绕过瓶颈。** Logit 空间是最终的线性层输出。在此空间施加 $\delta_{\text{logit}}$，后续只剩 $\text{softmax}$ 和 $\arg\max$——两者都是单调的，不会衰减方向性信号。
+
+$$\text{隐藏空间}: \delta \xrightarrow{\text{RMSNorm}(\times 1/45)} \xrightarrow{\text{Transformer}} \xrightarrow{\text{RMSNorm}(\times 1/45)} \xrightarrow{W_U} \Delta\text{logits}$$
+$$\text{Logit 空间}: \delta_{\text{logit}} \xrightarrow{\text{softmax}} \xrightarrow{\arg\max} \hat{y}$$
+
+**论据 2: 直接编码输出模式。** $v_{\text{logit}}[t]$ 是 token $t$ 在"正确回答"状态下相对于"错误回答"状态的平均 logit 差值。正分 token 是模型在正确时更倾向输出的词；负分 token 是模型在错误时更倾向输出的词。施加 $+\alpha \cdot v_{\text{logit}}$ 等价于对每个 token 施加一个"正确性偏置"。
+
+**论据 3: 消除 Jacobian 依赖性。** 隐藏空间干预的有效性取决于 $J_{\text{total}} \cdot \delta$——这依赖于当前输入 $x$ 处的局部 Jacobian，可能因样本而异。Logit 空间干预直接操作最终表示，不依赖中间 Jacobian。
+
+**论据 4（反向案例）: 如果 logit 空间也无效。** 若 $v_{\text{logit}}$ 干预 $\Delta \text{accuracy} = 0$，则意味着：
+- 即使直接告诉模型"哪些 token 更像正确答案"，模型仍然选错
+- 这意味着错误不是输出层的偏置问题，而是更深层的计算问题
+- → 结论：需要权重编辑或训练时对齐，推理时干预在根本上不可行（无论哪个空间）
+
+### 12.5 可检验预测
+
+| # | 预测 | 验证方法 | Gate |
+|---|------|---------|------|
+| P1 | $\Delta \text{accuracy} > 0$ 对某些 $\alpha$ | TriviaQA 50-100 test samples, α sweep | Δ > 5% 为成功 |
+| P2 | 效果 > 隐藏空间 v 干预 | 同一批 test samples, 对比 hidden v vs logit v | Logit > Hidden |
+| P3 | $v_{\text{logit}}$ 中 top-K token 与正确答案语义相关 | 可视化并人工检查 top-20/bottom-20 tokens | 定性判断 |
+| P4 | "知道但答错"子集上效果更强 | 分层评估（rank ≤ 50 vs > 50） | Know-wrong Δ > All Δ |
+| P5 | Δ accuracy 与 $\langle v, h \rangle$（检测分数）负相关 | 按检测分数分层 | 低分样本改善更大 |
+
+### 12.6 失败模式预判
+
+| 条件 | 后果 | 概率 |
+|------|------|------|
+| $v_{\text{logit}}$ 中正确 token 的权重不够大 | argmax 不翻转，Δ ≈ 0 | 中等 |
+| 正确答案不在 top-K 中（模型不知道） | logit 偏置不足以将其拉入 argmax | 高（73% don't know） |
+| $v_{\text{logit}}$ 过拟合校准集 | 在 test 上泛化差 | 低（大数定律，$|\mathcal{V}|$维均值） |
+| Softmax 的指数非线性压制小 Δ | 需要更大 α | 低-中 |
+
+### 12.7 创新点
+
+相对于现有工作（ITI、RepE、隐藏空间 v）：
+
+1. **空间选择的论证**：首次形式化论证为什么检测空间（隐藏）和干预空间（logit）应该不同，并用 RMSNorm Jacobian 的定量分析支撑
+2. **绕过而非克服瓶颈**：现有工作试图在隐藏空间中找"更好的方向"（梯度、对比等），我们直接切换到没有瓶颈的空间
+3. **可解释的 token 级偏置**：$v_{\text{logit}}$ 可以逐 token 解释——哪些词被增强、哪些被抑制——这在隐藏空间干预中是不可能的
+4. **闭环路径**：如果 logit 空间干预有效 → 可以训练一个从隐藏状态预测 $v_{\text{logit}}$ 的模块 → 实现"用隐藏空间检测，用 logit 空间干预"的完整闭环
+
+### 12.8 实验结果（2026-07-28）
+
+**实验配置**: 200 校准样本，50 测试样本，α ∈ {-5, -2, -1, -0.5, +0.5, +1, +2, +5, +10}，Qwen3-1.7B L27。
+
+**Knowability 分层**（rank ≤ 50）:
+| 子集 | n | Baseline |
+|------|---|----------|
+| Know & Correct | 17 | 100% |
+| Know & Wrong | 7 | 0% |
+| Don't Know | 26 | 0% |
+| **全部** | **50** | **48% (24/50)** |
+
+**Logit 空间干预结果**:
+| α | 正确数 | Δ |
+|---|--------|-----|
+| -5.0 | 24/50 | **0.0%** |
+| -2.0 | 24/50 | **0.0%** |
+| -1.0 | 24/50 | **0.0%** |
+| -0.5 | 24/50 | **0.0%** |
+
+所有 α 的 know_wrong 子集均为 0/7。全部 5 个预测被证伪。
+
+**v_logit token 分析**（证实理论失败根源）:
+- **Top (增强)**: `.` `,` `of` `united` `republic` `continental` — 标点和常见词
+- **Bottom (抑制)**: `Actor` `Actress` `actors` `Jackie` `成龙` `Alec` `女主角` — **全部是演员/电影相关**
+
+校准集中电影类题目多且模型答错 → 演员相关 token 被系统性标记为"错误方向"。此偏置对地理、历史、科学类问题完全无意义。
+
+### 12.9 理论修正：为什么 Logit 空间也失败
+
+**原假说（已证伪）**: 瓶颈在 RMSNorm → 换到 logit 空间可绕过。
+
+**修正后的诊断**: 瓶颈不在空间转换，而在**信号本质**。$v$（无论是 hidden 还是 logit 形式）捕捉的是"正确/错误答案出现时的伴随模式"（correlation），不是导致正确答案的因果机制（causation）。
+
+**形式化论证**: 正确的 logit 模式是**问题条件的**：
+$$\text{logits}_{\text{correct}}(x) = f(x, \text{knowledge})$$
+
+其中 $x$ 是具体问题。v_logit = E[logits | correct] - E[logits | wrong] 对 $x$ 做了边缘化：
+$$v_{\text{logit}} = \mathbb{E}_x[\text{logits} | \text{correct}, x] - \mathbb{E}_x[\text{logits} | \text{wrong}, x]$$
+
+这个期望抹掉了 $x$ 的条件信息。剩下的只是"在正确/错误回答中平均更常见的 token"——即校准集的领域偏置，不是通用 truth 信号。
+
+**推论**: 任何形式的 $v = \mathbb{E}[h | \text{correct}] - \mathbb{E}[h | \text{wrong}]$（无论 hidden、logit、attention 空间）都面临同样的边缘化问题。这解释了为什么跨 10+ 种范式、2 种模型规模，所有基于 $v$ 的方法都零效应。
+
+---
+
+## 13. 问题条件干预：三条理论路径
+
+> Section 12.9 的结论：全局方向 $v$ 因边缘化抹掉了问题条件信息而失效。
+> 本节严格推导三条保留问题条件的干预路径，每条路径给出机制假说、理论支撑、可检验预测和失败模式。
+
+### 13.1 统一形式化
+
+**定义 5（问题条件干预）.** 问题条件干预是一个函数：
+$$\delta: (h_\ell, x) \mapsto \delta(h_\ell, x) \in \mathbb{R}^d$$
+
+使得对给定问题 $x$，修正后的 hidden state $h_\ell + \delta(h_\ell, x)$ 产生的输出比未修正的 $h_\ell$ 更可能正确。
+
+全局干预 $\delta = \alpha \cdot v$ 是问题条件干预的退化特例（$\delta$ 不依赖于 $x$）。我们已经在实验上排除了退化形式。
+
+**核心挑战**: 如何在不访问 $y_{\text{true}}$ 的情况下构造 $\delta(h_\ell, x)$？
+
+---
+
+### 13.2 路径 1: Contrastive Prompt Decoding（对比提示解码）
+
+#### 13.2.1 机制假说
+
+对同一个问题 $x$，模型在不同提示条件下产生不同的 logit 分布。定义两种提示：
+
+- 标准提示 $p_{\text{std}}$: `"Question: {x}? Answer:"`
+- 真实导向提示 $p_{\text{truth}}$: `"Question: {x}? Answer truthfully and accurately:"`
+
+两种提示下的 logits：
+$$l_{\text{std}} = \text{logits}(p_{\text{std}}), \quad l_{\text{truth}} = \text{logits}(p_{\text{truth}})$$
+
+**核心假说**: $l_{\text{truth}} - l_{\text{std}}$ 捕捉了模型"在真实导向下更倾向"的 token 模式。这个差值天然保留了问题条件，因为两种 logits 都是对同一个 $x$ 计算的。
+
+干预：$\text{logits} \leftarrow l_{\text{std}} + \alpha \cdot (l_{\text{truth}} - l_{\text{std}})$
+
+#### 13.2.2 理论支撑
+
+**分解视角**: 将模型的 logit 分布分解为两部分：
+$$l_{\text{std}} = l_{\text{knowledge}}(x) + b_{\text{default}}(x)$$
+$$l_{\text{truth}} = l_{\text{knowledge}}(x) + b_{\text{truthful}}(x)$$
+
+其中 $l_{\text{knowledge}}(x)$ 是模型关于 $x$ 的内部知识，$b_{\text{default}}$ 和 $b_{\text{truthful}}$ 是两种"行为模式"下的偏置。差值：
+$$l_{\text{truth}} - l_{\text{std}} = b_{\text{truthful}}(x) - b_{\text{default}}(x)$$
+
+即"真实行为模式"与"默认行为模式"的差异——这正是我们想注入的信号，且它**以 $x$ 为条件**。
+
+**与现有工作的关系**:
+- Contrastive Decoding (Li et al., 2023): 用大模型/小模型的 logit 差。我们用同一模型的两种"模式"的差
+- DoLa (Chuang et al., 2024): 用不同层的 logit 差做对比。我们是用不同 prompt 的差
+- Context-aware Decoding (Shi et al., 2024): 用有无上下文的 logit 差
+
+**为什么可能比 v 好**: v 是跨问题的平均，抹掉了 $x$。$(l_{\text{truth}} - l_{\text{std}})$ 是对单个 $x$ 计算的，$x$ 的条件信息完整保留。
+
+#### 13.2.3 可检验预测
+
+| # | 预测 | Gate |
+|---|------|------|
+| C1 | $l_{\text{truth}} - l_{\text{std}} \neq 0$（提示确实改变了 logit 分布） | $\|l_{\text{truth}} - l_{\text{std}}\| > 0$ |
+| C2 | $\Delta \text{accuracy} > 0$ 对最优 $\alpha$ | Δ > 5% |
+| C3 | "知道但答错"子集上 Δ 更大 | Know-wrong > All |
+| C4 | truthful prompt 的 P(y_true) > 标准 prompt 的 P(y_true) | 对 know-wrong 子集 |
+
+#### 13.2.4 失败模式
+
+| 条件 | 后果 |
+|------|------|
+| truthful prompt 和标准 prompt 产生几乎相同的 logits | $l_{\text{truth}} - l_{\text{std}} \approx 0$，无信号 |
+| 模型在两种 prompt 下都"不知道" | P(y_true) 在两种情况下都很低 |
+| $\alpha$ 的最优值是问题相关的（非全局常数） | 固定 $\alpha$ 可能不够 |
+
+---
+
+### 13.3 路径 2: 问题条件修正网络 $\delta_\theta(h, x)$
+
+#### 13.3.1 机制假说
+
+训练一个轻量网络，输入为隐藏状态 $h$ 和问题表示 $e(x)$，输出为问题条件的修正向量：
+
+$$\delta_\theta: (h_\ell, e(x)) \mapsto \delta \in \mathbb{R}^d$$
+
+训练目标：直接优化干预后的正确性，而非回归某个全局 target direction：
+$$\mathcal{L}(\theta) = -\log P(y_{\text{true}} | h_\ell + \delta_\theta(h_\ell, e(x))) + \lambda \|\delta\|^2$$
+
+其中 $e(x)$ 可以取为 last token hidden state、问题 embedding、或更结构化的表示。
+
+#### 13.3.2 理论支撑
+
+**为什么问题条件能打破退化**: 之前我们尝试过学习全局 $\delta_\theta(h_\ell) \approx g$（Phase B LIN 设计）。但 $g$ 本身是问题条件的（$g = \nabla_h \log P(y_{\text{true}} | h)$），而学一个全局近似 $\delta_\theta(h)$ 相当于 $\mathbb{E}_x[g(x)]$——又做了一次边缘化。
+
+问题条件版本 $\delta_\theta(h, e(x))$ 的关键区别：
+- 输入包含了 $e(x)$ → 网络可以学习"对于这个问题，应该向哪个方向修正"
+- 不再回归全局 target → 直接优化下游指标
+
+**信息论视角**: $e(x)$ 提供了多少信息？
+
+令 $I(e(x); \delta^*)$ 为问题表示与最优修正之间的互信息。若 $e(x)$ 能区分不同的问题类型，则 $I > 0$，网络可以学到问题相关的修正。
+
+最简情况：$e(x)$ 是 last token hidden state（与 $h_\ell$ 不同层或相同层）。此时网络输入是 $[h_\ell; e(x)] \in \mathbb{R}^{2d}$，架构可以极简（如低秩线性层）。
+
+**与 LIN 的区别**:
+| | Phase B LIN | 路径 2 |
+|---|---|---|
+| 输入 | $h_\ell$ | $(h_\ell, e(x))$ |
+| 目标 | $\min \|\delta - g\|^2$ | $\min -\log P(y_{\text{true}} \mid h+\delta)$ |
+| 条件性 | 全局 | 问题条件 |
+| 预期 | 已下调至 ~10% | 待评估 |
+
+#### 13.3.3 可检验预测
+
+| # | 预测 | Gate |
+|---|------|------|
+| L1 | $\delta_\theta(h, e(x))$ 在训练集上降低 loss | 训练收敛 |
+| L2 | 验证集上 $\cos(\delta_\theta, g) > 0.3$ | 方向有意义 |
+| L3 | 推理时干预 $\Delta \text{accuracy} > 0$ | Δ > 5% |
+| L4 | 不同问题的 $\delta$ 方向不同（非共线） | $\cos(\delta_i, \delta_j)$ 分布分散 |
+| L5 | $e(x)$ 消融导致性能下降 | 去掉 $e(x)$ 后 Δ 降低 |
+
+#### 13.3.4 失败模式
+
+| 条件 | 后果 |
+|------|------|
+| $e(x)$ 的信息不足以区分问题类型 | $\delta_\theta$ 退化为全局方向 |
+| 训练/测试问题分布不一致 | 泛化失败 |
+| 直接优化 log P 导致 $\delta$ 过大 | 需要仔细调 $\lambda$ |
+| 1.7B 模型梯度信号太弱 | 需上 8B |
+
+---
+
+### 13.4 路径 3: Truth Reward Fine-tuning（真实奖励微调）
+
+#### 13.4.1 机制假说
+
+不干预推理过程，而是**改变模型参数**，使模型在推理时自然地产生更正确的输出。用 truth direction $v$ 作为奖励信号：
+
+$$R(h) = \langle v, h_{\text{last}} \rangle$$
+
+训练目标（KL 正则化的 RL）：
+$$\max_\theta \mathbb{E}_{x, y \sim P_\theta(\cdot|x)}[R(h(y))] - \beta \cdot \text{KL}(P_\theta \| P_{\text{ref}})$$
+
+其中 $P_{\text{ref}}$ 是原始模型，$P_\theta$ 是微调后的模型，$h(y)$ 是生成 $y$ 时的 last token hidden state。
+
+#### 13.4.2 理论支撑
+
+**为什么训练时对齐可能成功**: 推理时干预试图在模型**外部**施加修正——模型的计算电路没有变化，下游层可以"补偿"掉外部注入的信号。训练时对齐改变的是模型**本身的参数**——整个计算电路被重新优化来产生高 $R(h)$ 的表示。
+
+**形式化**: 推理时干预：
+$$h_\ell \leftarrow h_\ell + \delta \quad \text{→ 后续层看到 } h_\ell + \delta \text{ 而非 } h_\ell$$
+
+训练时对齐：
+$$\theta \leftarrow \theta - \eta \nabla_\theta \mathcal{L} \quad \text{→ 所有层的计算都被调整来最大化 } R(h)$$
+
+前者是"在现有计算上叠加信号"，后者是"重新定义计算本身"。
+
+**与 RLHF 的关系**: 这是 RLHF 的特化版本。标准 RLHF 用 human preference model 作为 reward，我们用 $v \cdot h$ 作为 reward。优势：
+- $v \cdot h$ 是自动计算的（不需要人类标注）
+- $v$ 的 AUROC=0.92 意味着它在检测意义上区分正确/错误的能力很强
+
+**关键风险——Reward Hacking**: 模型可能学会产生高 $v \cdot h$ 但与正确性无关的 hidden state。例如，模型可能学会在 hidden state 中放大 $v$ 的方向分量，但不改变 argmax。KL 正则化 $\beta \cdot \text{KL}(P_\theta \| P_{\text{ref}})$ 是防止此问题的标准手段。
+
+**替代方案——DPO 风格**: 可以用 Direct Preference Optimization 的思路，避免显式 RL。用 $v \cdot h$ 构造偏好对：
+- 对同一个 $x$，生成两个答案 $y_1, y_2$
+- 若 $v \cdot h(y_1) > v \cdot h(y_2)$，则 $(y_1, y_2)$ 是偏好对（$y_1$ 更好）
+- 用 DPO loss 微调模型
+
+DPO 风格比 RL 更稳定（不需要 reward model、不需要 PPO），且同样能实现"让模型内部化 truth signal"的目标。
+
+#### 13.4.3 可检验预测
+
+| # | 预测 | Gate |
+|---|------|------|
+| T1 | 微调后 $v \cdot h$ 均值上升（训练集） | 统计显著 |
+| T2 | 微调后 accuracy 上升（训练集） | Δ > 5% |
+| T3 | 验证集 accuracy 不退化 | 验证集 Δ ≥ 0% |
+| T4 | 通用能力不显著退化（HellaSwag） | Δ > -3% |
+| T5 | 微调后模型的 hidden state 在 $v$ 方向上投影更大 | 跨样本均值上升 |
+
+#### 13.4.4 失败模式
+
+| 条件 | 后果 |
+|------|------|
+| Reward hacking: 模型放大 $v \cdot h$ 但不改变 argmax | $v \cdot h$ 上升但 accuracy 不变 |
+| KL 正则化太强 | 模型几乎不变，所有指标持平 |
+| KL 正则化太弱 | 模型崩溃（产生无意义输出） |
+| $v$ 的方向本身不编码因果信息（只是相关性） | 最大化 $v \cdot h$ 不导致正确输出 |
+| 1.7B 模型容量不足以在保持通用能力的同时优化 truth | 需 8B |
+
+---
+
+### 13.5 三条路径对比与执行优先级
+
+| 维度 | 路径 1: Contrastive | 路径 2: Learned δ(x) | 路径 3: RL Training |
+|------|---------------------|---------------------|---------------------|
+| **理论优雅度** | 中 | 高 | 最高 |
+| **实现复杂度** | 低（~50 行代码） | 中（需设计网络+训练） | 高（RL/DPO 管线） |
+| **计算成本** | 2× 推理 | 1× 推理 + 轻量网络 | 训练数小时，推理零成本 |
+| **最快验证时间** | ~15 min | ~2h | ~4h |
+| **预期效应量** | 小（仅 prompt 差异） | 中（可学习问题条件） | 大（改变模型本身） |
+| **核心风险** | truthful prompt 无区分度 | 泛化到新问题 | reward hacking |
+| **论文创新点** | Truth-oriented CD | 首个问题条件干预网络 | 首个 v-based RL 对齐 |
+
+**建议执行顺序**: 路径 1 → 路径 2 → 路径 3（按实现复杂度递增，先快速验证最简单方案的可行性）
+
+**Gate 规则**: 若路径 1 无效 → 说明 prompt 差异不足以改变模型行为 → 路径 2 的 $e(x)$ 可能需要更强的表示。若路径 2 也无效 → 说明推理时干预在根本上不可行（即使问题条件）→ 必须走路径 3（训练时）。
+
+**结果（2026-07-29）**: 三条路径全部完成，全部 Δ accuracy ≈ 0。详见表 13.6。
+
+---
+
+## 14. 从干预失效到干预重构：两条新理论路径
+
+> Phase 13 三条路径全部失败后，需要回到理论层面回答两个根本问题：
+> 1. 如果 v 只 readout 不 control，是否存在不依赖 v 的干预机制？
+> 2. 如果模型已有知识但不表达，是否可以移除"压制"而非注入"真相"？
+>
+> 本节提出两条互补的理论路径，每条都从根本上避开了 v 的边缘化陷阱。
+
+### 14.1 统一诊断：v 为什么只是 readout
+
+回顾完整的实验证据链：
+
+| 实验 | 操作对象 | 条件性 | 结果 |
+|------|---------|--------|------|
+| Phase 8-11 | 隐藏状态 h | 全局方向 v_h | Δ = 0 |
+| Phase A P3 | 隐藏状态 h | 神谕梯度 g(x) | Δ = 0 |
+| S12 | Logit 空间 | 全局方向 v_logit | Δ = 0 |
+| S13.1 | Logit 空间 | Prompt-conditional | Δ = 0 |
+| S13.2 | 隐藏状态 h | Learned δ(h, e(x)) | Δ = 0 |
+| S13.3 | 模型参数 θ | DPO with v·h reward | Δ = -0.5% |
+
+**形式化结论**: 令 $\mathcal{I}$ 为所有推理时干预的集合，$\mathcal{T}$ 为所有训练时干预的集合。对 $\forall I \in \mathcal{I} \cup \mathcal{T}$，若 $I$ 的优化目标可以写为 $\max f(v \cdot h)$ 的形式（其中 $v$ 是跨问题边缘化的方向），则 $I$ 在 1.7B Qwen3 + TriviaQA 上的 Δ accuracy ≈ 0。
+
+**根本原因（三个层次）**:
+
+1. **信息层**: $v = \mathbb{E}_x[\mathbb{E}[h|\text{correct},x] - \mathbb{E}[h|\text{wrong},x]]$。外层期望 $\mathbb{E}_x$ 抹掉了问题条件信息，$v$ 只保留了"平均而言"的正确性偏置——即校准集领域偏置。
+
+2. **因果层**: 即使神谕梯度 $g(x)$（完美的逐问题方向）单层 shift 也零效应（Phase A P3）。这说明不仅是方向问题——整个"修改单层表示→期望 argmax 翻转"的因果链路在数学上不成立，因为 baseline entropy 太大 (~22 nats for pre-generation, ~14-15 nats during generation)。
+
+3. **优化层**: DPO 微调改变了模型参数（应绕过前两层），但仍然 reward hacking（v·h↑ 但 accuracy↓）。这说明 v·h 作为优化目标在 causal 意义上是无效的——最大化 v·h 与最大化 accuracy 不是对齐的目标。
+
+**推论（指导新方向）**:
+- ❌ 任何形式的 $v$ 作为干预方向 → 已穷尽
+- ❌ 任何形式的单层 shift（即使逐问题最优）→ 已穷尽  
+- ❌ 任何形式的 v·h 作为优化目标 → 已穷尽
+- ✅ **逐 token 逐层对比** — 不依赖预计算方向，利用模型自身不同层的预测差异
+- ✅ **移除压制而非注入真相** — 识别并消除阻碍知识表达的电路
+
+---
+
+### 14.2 方向 1: Token-Level Dynamic Contrast (TLDC)
+
+#### 14.2.1 核心洞察
+
+DoLa (Chuang et al., 2024) 使用同一模型不同层的 logit 差异做对比解码。其基本操作：
+
+$$l_{\text{final}}^{(t)} \leftarrow l_{\text{final}}^{(t)} - \alpha \cdot l_{\text{premature}}^{(t)}$$
+
+在 log-softmax 空间中，等价于惩罚"成熟层自信但早期层不自信"的 token。
+
+**与 Section 13 路径 1 的关键区别**: Section 13.1 是对比两个不同 prompt 的 logits（$l_{\text{truth}} - l_{\text{std}}$）——这仍然是对模型**外部输入**的扰动。TLDC 是对比模型**内部不同层**的 logits——这是模型**内部计算过程**的快照差异，不依赖输入改写。
+
+**先前 DoLa 实验结果**: 在 Qwen3-1.7B HellaSwag 上，naive DoLa baseline=0.524 → dola=0.500（Δ=-0.024），动态模式选择的全是 layer 0（最低层）作为 premature layer。失败原因分析：
+
+1. **层选择不当**: Layer 0 的 logits 几乎无信息（embedding 刚通过一层 Transformer），与 L27 的 JS 散度只是噪声大小
+2. **任务不匹配**: DoLa 为开放生成设计（TruthfulQA 上 7-12pp 提升），HellaSwag 是选择题——所有选项都"合理"
+3. **模型规模**: DoLa 论文在 ≥13B 模型上测试，1.7B 的层间知识分化可能不充分
+
+**TLDC 的创新**: 不盲目对比最早/最后层，而是用**检测 AUROC 峰值层**作为 premature layer，用**最后一层**作为 mature layer。直觉：检测最强的层编码了最多的 truth 相关信息，与最后层的差异捕捉了"信息在传播中丢失/被覆盖"的过程。
+
+#### 14.2.2 理论形式化
+
+**定义 6 (层间信息衰减).** 对给定输入 $x$ 和生成步 $t$，定义层 $\ell_1, \ell_2$ 之间的 logit 差异：
+
+$$\Delta_{\ell_1 \to \ell_2}^{(t)}(x) = \text{softmax}(l_{\ell_2}^{(t)}) - \text{softmax}(l_{\ell_1}^{(t)})$$
+
+其中 $l_\ell^{(t)} = W_U \cdot \text{RMSNorm}(h_\ell^{(t)})$ 是从层 $\ell$ 通过 early exit 到 logits 的映射。
+
+**假说 1（层间覆盖假说）.** 存在一个"覆盖电路" $\mathcal{C}_{\text{override}}$ 在检测层 $\ell_{\text{detect}}$ 和输出层 $L$ 之间运行。该电路在某些条件下将模型从"知道正确答案"的状态转变为"输出错误答案"的状态。这个转变反映在 $\Delta_{\ell_{\text{detect}} \to L}$ 中。
+
+**假说 2（检测层保真度假说）.** 检测 AUROC 最高的层 $\ell^* = \arg\max_\ell \text{AUROC}(\langle v, h_\ell \rangle)$ 编码了最多的 truth-relevant 信息。从 $\ell^*$ 到 $L$ 的 logit 变化中，背离正确答案的分量是覆盖电路的足迹。
+
+**命题 2（TLDC 的干预效果）.** 若假说 1-2 成立，则 TLDC 干预：
+
+$$\text{logits}^{(t)} \leftarrow l_L^{(t)} + \beta \cdot (l_{\ell^*}^{(t)} - l_L^{(t)})$$
+
+对 $\beta > 0$ 应该增强检测层倾向的 token，从而在 know-wrong 问题上提高正确率。
+
+**证明草图.** 将 $l_L$ 分解为 $l_L = l_{\ell^*} + \Delta_{\text{override}} + \Delta_{\text{computation}}$，其中 $\Delta_{\text{override}}$ 是覆盖电路引入的偏置，$\Delta_{\text{computation}}$ 是正当的进一步计算。TLDC 干预等价于 $l_L + \beta(l_{\ell^*} - l_L) = (1-\beta)l_L + \beta l_{\ell^*}$。当 $\beta \in (0,1)$ 时，这是向检测层 logits 的插值，削弱覆盖效应。$\square$
+
+#### 14.2.3 与 v-based 方法的本质区别
+
+| 维度 | v-based (Section 13) | TLDC |
+|------|---------------------|------|
+| 信号来源 | 跨问题平均 | 当前问题的层间差异 |
+| 条件性 | 全局（边缘化掉 $x$） | 完全条件（每 token 每层） |
+| 方向计算 | 预计算 $v$ | 推理时动态计算 $l_{\ell^*} - l_L$ |
+| 操作空间 | 隐藏状态 $h$ | Logit 空间 |
+| 机制假说 | "沿 v 方向 = 向真相移动" | "回到检测层 = 撤销覆盖" |
+| 为什么可能不同 | — | 不依赖任何跨问题边缘化的量 |
+
+#### 14.2.4 可检验预测
+
+| # | 预测 | Gate | 验证方法 |
+|---|------|------|---------|
+| D1 | $\ell^*$ (检测峰值层) ≠ 0 | 必须 | 已有数据：1.7B L20 AUROC=0.9066 |
+| D2 | $l_{\ell^*}$ 在 know-wrong 问题上给 $y_{\text{true}}$ 的 rank 优于 $l_L$ | 定性 | 比较 $\ell^*$ vs L 的 y_true rank |
+| D3 | TLDC 干预 Δ accuracy > 0（know-wrong 子集） | Δ > 5% | TriviaQA know-wrong subset, β sweep |
+| D4 | 效果随 $\ell$（premature 层）接近 $\ell^*$ 而增加 | 单调趋势 | 扫描不同 premature 层 |
+| D5 | 在 don't-know 子集上效果不退化（不引入新错误） | Δ ≥ 0% | TriviaQA don't-know subset |
+
+#### 14.2.5 失败模式预判
+
+| 条件 | 后果 | 概率 |
+|------|------|------|
+| $\ell^*$ 和 L 的 logit 分布高度相似（JS散度小） | $l_{\ell^*} - l_L \approx 0$，无信号 | 低（检测峰和输出层应不同） |
+| 覆盖发生在 $\ell^*$ 之前 | 检测层 logits 已包含覆盖，对比无效 | 中 |
+| 1.7B 层间分化不足 | 需要更大模型 | 中 |
+| Logit 空间不包含足够信息 | 需在 hidden space 做 layer contrast | 低-中 |
+
+---
+
+### 14.3 方向 2: 知识覆盖电路与反覆盖干预
+
+#### 14.3.1 范式转换
+
+**旧范式（已穷尽）**: 找到"真相方向"→ 沿此方向推动模型 → 期望 argmax 翻转。
+
+**新范式**: 模型已经知道答案（58% 问题 rank ≤ 50），但在 55% 的已知问题（32/58）上选择不输出。**问题不是缺少知识，而是知识被覆盖。**
+
+$$P(\text{correct} | x) = P(\text{knowledge exists} | x) \cdot P(\text{knowledge expressed} | \text{knowledge exists}, x)$$
+
+Phase 16 诊断数据：$P(\text{knowledge exists}) \approx 0.58$，$P(\text{expressed} | \text{exists}) \approx 0.45$。
+
+老方法试图提高 $P(\text{knowledge exists})$——但知识已存在。新方法试图提高 $P(\text{expressed} | \text{exists})$——**移除覆盖**。
+
+#### 14.3.2 定义覆盖方向
+
+**定义 7（知识条件正确/错误集合）.**
+
+$$\mathcal{D}_{\text{know-correct}} = \{(x, y) : \text{rank}(y_{\text{true}} | x) \leq K \land \text{generated}(x) = y_{\text{true}}\}$$
+$$\mathcal{D}_{\text{know-wrong}} = \{(x, y) : \text{rank}(y_{\text{true}} | x) \leq K \land \text{generated}(x) \neq y_{\text{true}}\}$$
+
+二者都满足"模型知道正确答案"（rank ≤ K），区别仅在于**是否输出**。
+
+**定义 8（覆盖方向）.**
+
+$$v_{\text{override}}^{(\ell)} = \mathbb{E}_{(x,\cdot) \sim \mathcal{D}_{\text{know-wrong}}}[h_\ell(x)] - \mathbb{E}_{(x,\cdot) \sim \mathcal{D}_{\text{know-correct}}}[h_\ell(x)]$$
+
+**关键性质**: $v_{\text{override}}$ 以"知识存在"为条件，消除了知识量（knowledge quantity）的混淆。与经典 $v$ 的关系：
+
+$$v_{\text{classic}} = \underbrace{\mathbb{E}[h|\text{correct}] - \mathbb{E}[h|\text{wrong}]}_{\text{mixes knowledge + expression}}$$
+$$v_{\text{override}} = \underbrace{\mathbb{E}[h|\text{know, wrong}] - \mathbb{E}[h|\text{know, correct}]}_{\text{pure expression/override signal}}$$
+
+**命题 3（覆盖方向的因果角色）.** 若覆盖电路 $\mathcal{C}_{\text{override}}$ 存在且其效应在隐藏空间中可被线性近似，则：
+
+1. $v_{\text{override}}$ 指向 "压制知识表达" 的方向
+2. 移除覆盖的操作 $h \leftarrow h - \alpha \cdot v_{\text{override}}$ 应提高 know-wrong 问题的正确率
+3. $\cos(v_{\text{override}}, v_{\text{classic}}) \neq 0$ 但不为 1——二者共享部分信息但 $v_{\text{override}}$ 更精确
+
+**证明草图（性质 3）.** 
+$$v_{\text{classic}} = \mathbb{E}[h|\text{correct}] - \mathbb{E}[h|\text{wrong}]$$
+$$= \underbrace{P(\text{know}|\text{correct}) \cdot \mathbb{E}[h|\text{know,correct}] + P(\text{not-know}|\text{correct}) \cdot \mathbb{E}[h|\text{not-know,correct}]}_{\text{correct side}}$$
+$$- \underbrace{P(\text{know}|\text{wrong}) \cdot \mathbb{E}[h|\text{know,wrong}] - P(\text{not-know}|\text{wrong}) \cdot \mathbb{E}[h|\text{not-know,wrong}]}_{\text{wrong side}}$$
+
+$v_{\text{classic}}$ 是四个条件期望的加权组合，$v_{\text{override}}$ 只涉及其中两个（知-错 减 知-对）。在 $P(\text{know}|\text{correct}) \neq P(\text{know}|\text{wrong})$ 的一般情况下，$v_{\text{override}} \neq v_{\text{classic}}$ 且 $\cos(v_{\text{override}}, v_{\text{classic}}) \in (0, 1)$。$\square$
+
+#### 14.3.3 理论检验：覆盖方向是否存在？
+
+在实验之前，我们可以通过已有数据推断 $v_{\text{override}}$ 是否可能非平凡。
+
+**先验论证（为什么 $v_{\text{override}}$ 应该非零）:**
+
+1. **Know-correct vs Know-wrong 是不同的计算状态**: 模型在两种情况下都"知道"答案，但一个输出了正确答案，一个没有。这两个状态在隐藏空间中不可能完全相同——否则 argmax 会一致
+2. **覆盖是一种主动计算**: 语言模型中有大量机制可以在最后一刻翻转 argmax（如 attention 到误导性上下文模式、特定 MLP 神经元的激活/抑制）。这些机制在隐藏状态中必然留下痕迹
+3. **如果 $v_{\text{override}} \approx 0$（即 know-correct 和 know-wrong 的隐藏状态分布相同），则意味着覆盖发生在隐藏状态→logits 映射之后**——即纯 logit/softmax 层面的现象，排除了隐藏态因果。但这与"logit 空间 v 干预零效应"（Section 12）不一致
+
+**来自 Phase 16 诊断的间接证据**:
+- Know-wrong 子集：16/50 样本，模型知道答案但不输出
+- Token-level v-intervention Δ logprob ≈ 0（全部 know-wrong 样本）
+- 解释：v_classic 混合了知识量信号和覆盖信号，在 know-wrong 上两种信号方向可能相反（知识量信号指向正确，覆盖信号指向错误），互相抵消
+
+#### 14.3.4 反覆盖干预设计
+
+**方案 A: 减法干预（移除覆盖）**
+
+$$h_\ell \leftarrow h_\ell - \alpha \cdot v_{\text{override}}$$
+
+与经典 $h + \alpha v$ 的区别：
+| | 经典 $h + \alpha v$ | 反覆盖 $h - \alpha v_{\text{override}}$ |
+|---|---|---|
+| 方向含义 | "向正确状态移动" | "从错误覆盖状态退回" |
+| 操作 | 加法（注入） | 减法（移除） |
+| 条件性 | 全局 | 仅 know-wrong（需检测门控） |
+| 风险 | 在 don't-know 上引入噪声 | 在 know-correct 上可能降低正确率 |
+
+**方案 B: 投影移除（更精细）**
+
+$$h_\ell \leftarrow h_\ell - \text{proj}_{v_{\text{override}}}(h_\ell) = h_\ell - \langle v_{\text{override}}, h_\ell \rangle \cdot v_{\text{override}}$$
+
+移除 $h_\ell$ 在覆盖方向上的全部分量。比固定 α 的减法更自适应——覆盖信号强时移除更多，弱时移除更少。
+
+**方案 C: 正交化（保留知识，移除覆盖）**
+
+令 $v_{\text{knowledge}}$ 编码"知道 vs 不知道"（不涉及表达），$v_{\text{override}}$ 编码"覆盖 vs 表达"。二者不正交但可分解：
+
+$$v_{\text{classic}} = \gamma_1 \cdot v_{\text{knowledge}} + \gamma_2 \cdot v_{\text{override}}$$
+
+通过线性回归从数据中估计 $\gamma_1, \gamma_2$，然后只移除覆盖分量。
+
+#### 14.3.5 检测门控：什么时候应该干预
+
+覆盖干预的关键前提：**只在模型"知道但可能覆盖"时干预**。随机干预（不知道时也移除覆盖方向分量）可能降低正确率。
+
+**检测信号**: $\langle v_{\text{classic}}, h_\ell \rangle$ 的 AUROC = 0.92 → 能可靠区分"知道"和"不知道"。用此信号做门控：
+
+$$\text{intervene if } \langle v_{\text{classic}}, h_\ell \rangle > \tau$$
+
+其中 $\tau$ 基于校准集上 know vs don't-know 的分数分布选择。
+
+**二阶段流程**:
+1. Stage 1（检测）: 计算 $s = \langle v_{\text{classic}}, h_{\ell^*} \rangle$。若 $s \leq \tau$ → 模型不知道，不干预
+2. Stage 2（反覆盖）: 若 $s > \tau$ → 模型知道，施加 $h \leftarrow h - \alpha \cdot v_{\text{override}}$ 防止覆盖
+
+#### 14.3.6 可检验预测
+
+| # | 预测 | Gate | 验证方法 |
+|---|------|------|---------|
+| O1 | $v_{\text{override}}$ 非零：$\|v_{\text{override}}\| > 0.01 \cdot \|v_{\text{classic}}\|$ | 必须 | 从 know-correct/know-wrong 校准样本计算 |
+| O2 | $\cos(v_{\text{override}}, v_{\text{classic}}) \in (0.3, 0.9)$（共享部分信息但不相同） | 必须 | 直接计算余弦 |
+| O3 | 反覆盖干预在 know-wrong 子集上 Δ accuracy > 0 | Δ > 10% | TriviaQA know-wrong subset |
+| O4 | 经典 v 干预在相同 know-wrong 子集上 Δ accuracy = 0（对照） | Δ ≈ 0% | 同一样本，经典 v 干预 |
+| O5 | 在 know-correct 子集上，反覆盖干预 Δ accuracy ≤ 0（移除覆盖方向可能使正确样本变错） | Δ ≤ 0% | TriviaQA know-correct subset |
+| O6 | 检测门控有效：仅对 $s > \tau$ 的样本干预，总体 Δ accuracy > 0 | Δ > 5% | All test samples, gated intervention |
+| O7 | $v_{\text{override}}$ 的范数在后期层 > 早期层（覆盖是高层现象） | 单调递增 | L0-L27 各层 |
+
+#### 14.3.7 为什么 DPO 微调失败但反覆盖可能成功
+
+DPO 用 $v \cdot h$ 作为 reward → 模型学习最大化 v·h。但：
+- $v_{\text{classic}} \cdot h$ 增大可以通过两种方式实现：(a) 输出正确答案（我们想要的），(b) 在隐藏状态中添加 $v$ 方向的分量但不改变 argmax（reward hacking，实际发生的）
+- $v_{\text{override}} \cdot h$ 的减法操作不依赖学习——它是直接干预。不存在"模型学会走捷径"的问题
+- 反覆盖只需在推理时移除一个已知方向的分量，而非重新训练模型以最大化某个标量
+
+---
+
+### 14.4 两条路径的内在联系
+
+TLDC 和反覆盖干预在数学上不是独立的：
+
+**定理 3（Logit-隐藏状态对偶性）.** 在 RMSNorm 线性近似的精度内：
+
+$$\Delta_{\ell^* \to L}^{(t)} = l_L - l_{\ell^*} \approx W_U \cdot \text{RMSNorm}'(h_L) \cdot (h_L - h_{\ell^*})$$
+
+TLDC 在 logit 空间的操作 $l_L + \beta(l_{\ell^*} - l_L)$ 等价于在 logit 空间减去 $(1-\beta)(l_L - l_{\ell^*})$。
+
+而 $h_L - h_{\ell^*}$ 是隐藏状态在层 $\ell^* \to L$ 间的变化。若覆盖发生在这段区间，则 $h_L - h_{\ell^*}$ 包含覆盖方向的分量：
+
+$$h_L - h_{\ell^*} = \Delta h_{\text{computation}} + \Delta h_{\text{override}}$$
+
+**两条路径的互补性**:
+- TLDC 在 **logit 空间**操作，不需要显式分解 $\Delta h_{\text{override}}$，直接利用层间 logit 差异的"净效应"
+- 反覆盖在 **隐藏空间**操作，需要显式计算 $v_{\text{override}}$ 但可以更精确地只移除覆盖分量
+- 可以组合：$h_\ell \leftarrow h_\ell - \alpha \cdot \text{proj}_{v_{\text{override}}}(h_\ell)$（隐藏空间移除覆盖）+ $l \leftarrow l_L + \beta(l_{\ell^*} - l_L)$（logit 空间增强检测层信号）
+
+---
+
+### 14.5 实验计划
+
+#### Phase 14a: 覆盖方向构建与诊断（优先，~30 min）
+
+```
+1. 从 TriviaQA 采样 300 校准样本
+2. 对每样本: 前向传播 → 获取 rank(y_true), h_ℓ (all layers), generation result
+3. 按 rank ≤ 50 分类为 know-correct / know-wrong / don't-know
+4. 计算 v_override (per layer) = mean(h[know_wrong]) - mean(h[know_correct])
+5. 验证 O1 (||v_override|| > 0) 和 O2 (0.3 < cos(v_override, v_classic) < 0.9)
+6. 计算 O7: v_override norm across layers
+```
+
+**Gate**: 若 O1 或 O2 失败 → v_override 不存在或与 v_classic 相同 → 覆盖假说被证伪 → 跳过 14b
+
+#### Phase 14b: 反覆盖干预验证（若 14a 通过，~45 min）
+
+```
+1. 在 50-100 test samples 上:
+   a. 分类 knowability (同 14a)
+   b. 对 know-wrong 样本: h ← h - α·v_override, α sweep
+   c. 对 know-correct 样本: 同上（验证 O5: Δ ≤ 0）
+   d. 对 don't-know 样本: 不干预
+   e. 检测门控: 仅 s > τ 的样本干预
+2. 对照: 经典 v_classic 干预在相同样本上（验证 O4: Δ = 0）
+```
+
+**Gate**: O3 (Δ > 10% on know-wrong) 或 O6 (gated Δ > 5%)
+
+#### Phase 14c: TLDC 层间对比（可与 14a 并行，~30 min）
+
+```
+1. 对检测峰值层 ℓ* (L20 for 1.7B) 和最后一层 L27:
+   a. 计算 50 test samples 的 JS(l_ℓ*, l_L) 分布
+   b. 比较 ℓ* 和 L 的 y_true rank (验证 D2)
+2. TLDC 干预:
+   β sweep: {0.1, 0.3, 0.5, 0.7, 0.9}
+   模式: logits ← l_L + β·(l_ℓ* - l_L)
+   按 knowability 分层评估
+```
+
+**Gate**: D3 (Δ > 5% on know-wrong)
+
+#### Phase 14d: 组合干预（若 14b 和 14c 任一通过，~20 min）
+
+```
+h ← h - α·v_override (隐藏空间反覆盖)
++ logits ← logits + β·(l_ℓ* - l_L) (logit 空间 TLDC)
+```
+
+---
+
+### 14.6 失败模式与备用方向
+
+| 如果... | 则... | 下一步 |
+|---------|------|--------|
+| 14a O1 失败（v_override ≈ 0） | 覆盖不在隐藏状态中，可能在 attention 模式中 | Attention pattern override analysis |
+| 14a O2 失败（cos ≈ 1） | v_override 和 v_classic 相同方向 → 覆盖假说错 | 覆盖是纯 logit 层面现象 → 回到 decoding 策略 |
+| 14b 通过 14c 失败 | 覆盖在隐藏空间可操作，层间 logit 对比无额外信息 | 聚焦反覆盖 |
+| 14c 通过 14b 失败 | 层间 logit 差异有效，覆盖方向本身无独立性 | 聚焦 TLDC |
+| 全部失败 | 1.7B 的覆盖机制太弱/不存在 | 上 8B 验证；或转向写论文（检测可行≠可干预） |
+
+---
+
+### 14.7 创新点总结
+
+| 维度 | 方向 1: TLDC | 方向 2: 反覆盖 |
+|------|-------------|---------------|
+| **理论创新** | 用检测 AUROC 峰值层替代 DoLa 的盲目早期层选择；形式化层间覆盖假说 | 首次区分知识量信号和知识表达信号；v_override 隔离覆盖电路 |
+| **方法创新** | 不依赖任何预计算方向 v，推理时动态计算层间对比 | 从"注入真相"转向"移除压制"；减法/投影/正交化三种操作 |
+| **与现有工作区别** | DoLa 用早期层（信息最少），TLDC 用检测层（truth 信息最多）| 所有现有方法都试图"增强正确"，反覆盖试图"减弱错误压制" |
+| **闭环路径** | 若有效 → TLDC 可完全自动化（无需校准集，纯推理时） | 若有效 → 检测门控 + 反覆盖 = 完整闭环（检测 AUROC 0.92 做门控） |
