@@ -1375,3 +1375,196 @@ h ← h - α·v_override (隐藏空间反覆盖)
 | **方法创新** | 不依赖任何预计算方向 v，推理时动态计算层间对比 | 从"注入真相"转向"移除压制"；减法/投影/正交化三种操作 |
 | **与现有工作区别** | DoLa 用早期层（信息最少），TLDC 用检测层（truth 信息最多）| 所有现有方法都试图"增强正确"，反覆盖试图"减弱错误压制" |
 | **闭环路径** | 若有效 → TLDC 可完全自动化（无需校准集，纯推理时） | 若有效 → 检测门控 + 反覆盖 = 完整闭环（检测 AUROC 0.92 做门控） |
+
+---
+
+## 15. 通信系统视角下的统一理论
+
+> 本节从通信系统的第一性原理出发，建立一个统一的数学框架来理解
+> (a) 为什么检测可行，(b) 为什么基于固定方向的干预不可行，
+> (c) 什么样的纠错机制才是理论上有效的，(d) 推理时干预的容量上限在哪里。
+
+### 15.1 系统映射
+
+将 LLM 推理过程映射为通信系统：
+
+```
+传统通信系统:
+  信源 S → 编码器 E → [信道 C + 噪声 N] → 解码器 D → 接收信号 R
+
+LLM 推理:
+  参数化知识 θ → L0...Lℓ* → [Lℓ*+1...LL + 覆盖电路] → RMSNorm ∘ WU → logits → argmax
+       (信源)      (干净段编码)     (含噪信道)               (解码器)      (判决)
+```
+
+| 通信概念 | 符号 | LLM 对应 | 关键性质 |
+|---------|------|---------|---------|
+| 信源 | $\mathcal{S}$ | 训练时编码到 $\theta$ 中的事实知识 | rank(y_true) ≤ K 时为存在 |
+| 干净段 | $\mathcal{E}$ | L0 → Lℓ* 的 Transformer 计算 | ℓ* = argmax AUROC |
+| 信道 | $\mathcal{C}$ | Lℓ*+1 → LL 的后续计算 | 包含合理推理 + 覆盖电路 |
+| 噪声 | $\mathcal{N}$ | 覆盖电路输出 | 信号相关的非加性"噪声" |
+| 解码器 | $\mathcal{D}$ | RMSNorm ∘ WU | 线性映射到词表 |
+| 接收信号 | $l_L$ | 最终 logits | 含噪观测 |
+| 判决 | $\arg\max$ | Greedy decoding | 硬判决 |
+| 误码 | — | 幻觉 ($\arg\max \neq y_{\text{true}}$) | 55% known 问题被误码 |
+
+### 15.2 信号模型
+
+**定义 9（信号-噪声分解）.** 对给定输入 $x$，层 $\ell$ 的隐藏状态可分解为：
+
+$$h_\ell(x) = s_\ell(x) + n_\ell(x)$$
+
+其中 $s_\ell(x)$ 是 truth-signal 分量（编码了"正确答案是什么"的信息），$n_\ell(x)$ 是非 truth 分量（句法、风格、偏置、覆盖噪声）。
+
+**性质 3（检测层的 SNR 最大化）.** 定义层 $\ell$ 的信噪比：
+
+$$\text{SNR}_\ell = \frac{\mathbb{E}_x[\|\text{proj}_{V_{\text{truth}}}(h_\ell)\|^2]}{\mathbb{E}_x[\|h_\ell - \text{proj}_{V_{\text{truth}}}(h_\ell)\|^2]}$$
+
+其中 $V_{\text{truth}}$ 是 truth-relevant 子空间。则 $\ell^* = \arg\max_\ell \text{SNR}_\ell$ 即检测 AUROC 峰值层。
+
+**实验验证**: Phase 7 确认 ℓ* = L20 (AUROC=0.9066)。与 L27 相比，L20 的 SNR 更高——这并不矛盾于 L27 保留了 y_true 的 rank 信息（14c D2 结果），因为 rank 保留 ≠ SNR 最优。rank 只关心单调性，SNR 关心的是信号分量占总能量的比例。
+
+**性质 4（信道的信号衰减）.** 定义信道 $\mathcal{C}_{\ell^*\to L}$ 为层 $\ell^*+1$ 到 $L$ 的合成变换：
+
+$$h_L = \mathcal{C}(h_{\ell^*})$$
+
+信道对信号分量的影响：
+
+$$\text{SNR}_L = \text{SNR}_{\ell^*} - \Delta_{\text{channel}}$$
+
+其中 $\Delta_{\text{channel}} > 0$ 刻画了覆盖电路对 SNR 的衰减。Phase 14a 确认 $\|v_{\text{override}}\|$ 在 L27 比 L20 放大 4.8×——信道不是在简单地"加噪声"，而是在**主动生成对抗性偏置**。
+
+### 15.3 检测理论：匹配滤波器
+
+**定理 4（最优线性检测器）.** 在信号模型 $h \sim \mathcal{N}(\mu_c, \Sigma)$ for correct, $h \sim \mathcal{N}(\mu_w, \Sigma)$ for wrong 下，Neyman-Pearson 最优检测器为：
+
+$$d(x) = (\mu_c - \mu_w)^T \Sigma^{-1} h(x)$$
+
+当 $\Sigma \approx \sigma^2 I$（各向同性协方差，Phase A P4 确认 effective rank=38 ≪ 2048），退化为：
+
+$$d(x) = \langle v, h(x) \rangle, \quad v = \mu_c - \mu_w$$
+
+这正是我们的 detector。**检测本质上是一个匹配滤波器**——$v$ 是"truth 信号"的模板，$d(x)$ 衡量 $h(x)$ 与模板的匹配程度。
+
+**推论 4.1（检测与干预的分离）.** 匹配滤波器检测信号的存在，但不提供"如何修正信号"的信息。这是检测可行但 $v$ 干预不可行的数学根源——$v$ 是最优检测方向，但不是最优控制方向。
+
+### 15.4 信道模型与校验子
+
+**定义 10（校验子 / Syndrome）.** 对输入 $x$ 和生成步 $t$，层 $\ell_1, \ell_2$ 之间的校验子定义为：
+
+$$S_{\ell_1\to\ell_2}^{(t)}(x) = l_{\ell_2}^{(t)} - l_{\ell_1}^{(t)} \in \mathbb{R}^{|\mathcal{V}|}$$
+
+**定理 5（信道分解）.** 将信道 $\mathcal{C}_{\ell^*\to L}$ 分解为合理计算分量和覆盖分量：
+
+$$S_{\ell^*\to L}(x) = \underbrace{S_{\text{compute}}(x)}_{\text{合理推理的贡献}} + \underbrace{S_{\text{override}}(x)}_{\text{覆盖电路的贡献}}$$
+
+TLDC 的纠错公式：
+
+$$l_{\text{corrected}} = l_L - \beta \cdot S_{\ell^*\to L} = l_L - \beta \cdot (S_{\text{compute}} + S_{\text{override}})$$
+
+**核心矛盾**: $S_{\text{compute}}$ 和 $S_{\text{override}}$ 在同一个校验子中不可分离。减去校验子时，同时移除了覆盖噪声和合理推理。这解释了为什么 β 必须极小——过大的 β 会同时抵消 $S_{\text{compute}}$，导致模型性能退化（Phase 14c: β≥0.3 全面退化）。
+
+**推论 5.1（纠错容量的上界）.** 令 $m(x) = \text{logit}_{\arg\max} - \text{logit}_{y_{\text{true}}}$ 为 logit margin。单校验子 TLDC 能纠正一个错误当且仅当：
+
+$$\beta \cdot S_{\ell^*\to L}(x)[y_{\text{true}}] > m(x) + \beta \cdot S_{\text{compute}}(x)[y_{\text{true}}]$$
+
+即 $\beta$ 在 $y_{\text{true}}$ 上的覆盖分量效应超过 margin 加上合理推理损失的惩罚。
+
+此条件的两个经验后果：
+1. **只有 margin 小的样本可纠**——解释了为什么 3/21 KW 修正而非全部
+2. **β 存在最优值**——太小不足以跨越 margin，太大则 $S_{\text{compute}}$ 惩罚主导
+
+### 15.5 多导频纠错（Multi-Pilot Syndrome Decoding）
+
+**定理 6（多冗余层纠错）.** 用 $K$ 个中间参考层 $\{\ell_1, \ldots, \ell_K\}$ 的校验子做纠错：
+
+$$l_{\text{corrected}} = l_L + \sum_{k=1}^{K} \beta_k \cdot S_{\ell_k\to L}$$
+
+其中 $S_{\ell_k\to L} = l_{\ell_k} - l_L$。
+
+**最优 β 向量.** 在最小化 $\mathbb{E}[\|\text{logits}_{\text{corrected}} - \text{logits}_{\text{true}}\|^2]$ 的意义下，最优 β 满足：
+
+$$\mathbf{G} \boldsymbol{\beta} = \mathbf{b}$$
+
+其中 $G_{ij} = \mathbb{E}_x[\langle S_{\ell_i\to L}, S_{\ell_j\to L} \rangle]$ 是各校验子之间的 Gram 矩阵，$b_i = \mathbb{E}_x[\langle S_{\ell_i\to L}, l_{\text{true}} - l_L \rangle]$ 是校验子与真实误差之间的相关性。
+
+**直觉**: 每个参考层提供对噪声的不同视角。如果 $\ell_1$ 和 $\ell_2$ 的校验子高度相关，则增加 $\ell_2$ 不会带来更多信息——$G$ 矩阵的 condition number 决定了多导频的有效容量。
+
+**推论 6.1（层选择的 Gram 矩阵准则）.** 应选择校验子相互正交的参考层。层越接近则校验子越相关（$G_{ij}$ 越大），信息的边际增益越小。这预测：$\{L10, L15, L20\}$ 应优于 $\{L18, L19, L20\}$。
+
+**推论 6.2（低复杂度自适应 β）.** 若各层校验子近似正交（$G \approx \text{diag}$），则最优 β 退化为逐层独立标量：
+
+$$\beta_k \approx \eta \cdot \frac{\mathbb{E}_x[\langle S_{\ell_k\to L}, l_{\text{true}} - l_L\rangle]}{\mathbb{E}_x[\|S_{\ell_k\to L}\|^2]} \cdot \frac{\|S_{\ell_k\to L}(x)\|}{\mathbb{E}[\|S_{\ell_k\to L}\|]}$$
+
+其中第一项是全局最优标量因子（可离线计算），第三项是逐样本的自适应缩放（Phase 15.2c 的 JS-based heuristic 即此因子的近似）。
+
+### 15.6 为什么固定方向干预必然失败：通信视角的证明
+
+**定理 7（固定方向干预的容量为零）.** 考查形如 $h \leftarrow h + \alpha \cdot v$ 的干预（$v$ 不依赖于 $x$）。在 Gaussian 信号模型下，其对 argmax 翻转的条件期望效应为：
+
+$$\mathbb{E}_x[\Delta \text{argmax}] = 0$$
+
+**证明.** 令 $\Delta \text{logits} = \alpha \cdot J(x) \cdot v$，其中 $J(x) = \partial l_L / \partial h$ 是 Jacobian。$v$ 独立于 $x$ 而 $J(x)$ 对 $x$ 高度敏感。因此 $\Delta \text{logits}$ 在样本间的方向是**零均值的**：
+
+$$\mathbb{E}_x[\Delta \text{logits}] = \alpha \cdot \mathbb{E}_x[J(x)] \cdot v$$
+
+但 $\mathbb{E}_x[J(x)]$ 在大词表空间中的有效秩极低——在 logit 空间中，不同问题需要的"正确调整方向"分布在 $|\mathcal{V}| \approx 150$K 维中的不同子空间。全局平均 $\mathbb{E}_x[J(x)]$ 抹掉了问题条件信息，退化为信息量极低的方向。
+
+**此定理统一解释了跨 10+ 范式的全部零结果**：$v_{\text{hidden}}$ (Phase 8-11), $v_{\text{logit}}$ (S12), contrastive logits (S13.1), learned δ(x) (S13.2 中无 e(x)), DPO with v·h reward (S13.3), $v_{\text{override}}$ (14b)——所有涉及跨问题平均的操作都在不同层面重复了这个边缘化陷阱。
+
+### 15.7 推理时纠错的容量定理
+
+**定义 11（纠错容量）.** 令 $\mathcal{R}$ 为推理时干预的集合，定义其纠错容量为在验证集上的最大可达 know-wrong 纠正率：
+
+$$C(\mathcal{R}) = \max_{R \in \mathcal{R}} \frac{|\{x \in \mathcal{D}_{\text{KW}} : R(x) = y_{\text{true}}\}|}{|\mathcal{D}_{\text{KW}}|}$$
+
+**定理 8（容量上界）.** 对于单层 logit 空间干预（如 TLDC），
+
+$$C \leq \mathbb{P}_{x \sim \mathcal{D}_{\text{KW}}}\left[m(x) \leq \max_{\beta} \|\beta \cdot S_{\ell^*\to L}(x)\|_\infty\right]$$
+
+其中 $m(x)$ 是 logit margin，$S$ 是校验子。
+
+**证明思路.** 即使 $\beta$ 是逐样本最优选择的（神谕 $\beta^*(x)$），干预也只能在 $m(x)$ 足够小的样本上翻转 argmax。因此容量受限于 margin 分布的下尾概率。
+
+**对 TLDC 的估计.** 1.7B 上 KW 样本的 margin 经验分布决定了 C ≈ 14.3%（3/21 是观测纠正率，与理论上界在量级上一致）。8B 的 margin 分布可能更尖锐或更平缓，因此 15.1 的实验直接检验了此容量定理的跨规模预测。
+
+### 15.8 从理论到设计的指导原则
+
+通信系统视角推导出三条推理时幻觉干预的必要条件：
+
+| # | 条件 | 理论基础 | 违反后果 |
+|---|------|---------|---------|
+| 1 | **问题条件性**——干预信号必须依赖于 $x$ | 定理 7: $\mathbb{E}_x[J(x)]$ 退化 | 全局方向零效应 (v, DPO) |
+| 2 | **logit 空间操作**——绕过隐藏空间的 Jacobian 瓶颈 | A.5.2: RMSNorm 衰减 44× | 隐藏空间干预 Δ ≈ 0 |
+| 3 | **校验子机制**——用层间对比而非预计算方向 | 定理 5: 校验子天然保留 $x$ 条件 | 预计算方向即边缘化 |
+
+**TLDC 同时满足三条**——这是它成为首个正向干预的根本原因。
+
+**多导频 TLDC 可以进一步改进条件 1 和 3**——通过增加正交的校验子维度，在不牺牲条件 2 的情况下提高容量。
+
+### 15.9 可检验预测
+
+| # | 预测 | 理论依据 | 验证方式 |
+|---|------|---------|---------|
+| C1 | 多导频 TLDC (L10+L15+L20) 纠正率 > 单 TLDC (L20 only) | 定理 6: 互补校验子增加容量 | Phase 15.2a 层消融 |
+| C2 | 选择正交校验子层 (L10, L20) 优于选择相关校验子层 (L18, L20) | 推论 6.1: Gram 矩阵条件数 | 对比不同层组合 |
+| C3 | 自适应 $\beta \propto \|S(x)\|$ 优于固定 β | 推论 6.2: 逐样本最优缩放 | Phase 15.2c |
+| C4 | 8B 的 $m(x)$ 分布若更集中于零附近 → 纠正率更高 | 定理 8: 容量上界 | Phase 15.1 8B 验证 |
+| C5 | KW 样本的 $(l_{\ell^*} - l_L)$ 在 $y_{\text{true}}$ 上为**正**（校验子确认覆盖压低真相） | 信道模型 | 逐 token 分析 (15.2b) |
+| C6 | SNR 逐层演化曲线（AUROC vs layer）应呈单峰 | 性质 3 | 已确认: L20 峰值 |
+| C7 | 多导频 β 的 Gram 矩阵应近似对角占优（异层校验子低相关） | 推论 6.1 | PCA of syndrome vectors |
+
+### 15.10 与已有理论的整合
+
+| 已有理论 | 通信视角的重新解释 |
+|---------|------------------|
+| Section 11: v ∈ V_noise | 匹配滤波器 ≠ 控制方向；检测和干预需要不同的统计量 |
+| Section 12: logit vs hidden space | logit 空间是"判决前"的最后一级——信道的输出端，最适合施加纠错 |
+| Section 13: 问题条件干预 | 校验子 $S(x)$ 是天然条件化的——等效于逐样本估计信道噪声 |
+| Section 14: TLDC + 反覆盖 | TLDC 是单导频纠错；反覆盖试图在隐藏空间去噪（受限于 Jacobian 瓶颈） |
+
+### 15.11 理论局限
+
+1. **高斯假设**: 检测理论部分假设 $h$ 的条件分布为高斯。Phase A P4 的 PCA 结果（effective rank=38）表明分布高度集中在低维流形上，高斯近似可能过于简化
+2. **线性校验子**: 当前理论假设 $S_{\ell_1\to\ell_2}$ 是线性的（logit 减法）。实际中信道 $\mathcal{C}$ 是非线性的（7+ 层 Transformer），校验子中可能丢失非线性交互信息
+3. **单步判决**: 当前分析只考虑单个 argmax 判决，未建模纠错对后续 token 的自回归影响——可能高估或低估真实纠正率
