@@ -1082,6 +1082,81 @@ $$\text{logits}^{(t)} \leftarrow l_L^{(t)} + \beta \cdot (l_{\ell^*}^{(t)} - l_L
 | 1.7B 层间分化不足 | 需要更大模型 | 中 |
 | Logit 空间不包含足够信息 | 需在 hidden space 做 layer contrast | 低-中 |
 
+#### 14.2.6 具体实现与实验结果
+
+**实现步骤.** TLDC 是一个逐 token 的动态干预，不依赖任何预计算方向。生成循环如下：
+
+```
+输入: prompt (tokenized)
+tokens = [BOS, ...prompt tokens...]
+
+for step in 1..max_new_tokens:
+    1. 前向传播 (with hooks):
+       → 获取正常输出 logits: l_L = model(tokens)
+       → 同时捕获中间层隐藏状态: h_ℓ* (at blocks.ℓ*.hook_resid_post, last token position)
+    
+    2. 计算 early-exit logits:
+       l_ℓ* = W_U · RMSNorm(h_ℓ*)
+    
+    3. TLDC 插值:
+       l_combined = l_L + β · (l_ℓ* - l_L)
+    
+    4. 选择下一 token:
+       next_token = argmax(l_combined)
+       tokens.append(next_token)
+```
+
+**早退机制 (Early Exit).** 步骤 2 是 TLDC 的核心。正常推理路径是：
+
+$$h_0 \to \cdots \to h_{\ell^*} \to h_{\ell^*+1} \to \cdots \to h_L \xrightarrow{\text{RMSNorm}} \xrightarrow{W_U} l_L$$
+
+早退路径跳过了 $\ell^*+1$ 到 $L$ 的 Transformer 层，直接将中间表示映射为 logits：
+
+$$h_{\ell^*} \xrightarrow{\text{RMSNorm}} \xrightarrow{W_U} l_{\ell^*}$$
+
+$\ell^*$ 选为检测 AUROC 峰值层（1.7B: L20, AUROC=0.9066）。直觉：这一层编码了最多的 truth 相关信息。从 $\ell^*$ 到 $L$ 之间还有 7 层 Transformer（L21-L27），这些层的计算包含了注意力上下文整合、MLP 非线性变换、以及可能的"覆盖"操作。$l_{\ell^*} - l_L$ 捕捉了这 7 层计算对输出分布的净效应。
+
+**插值公式的含义.** 将 $l_{\text{combined}}$ 展开：
+
+$$l_{\text{combined}} = (1-\beta) \cdot l_L + \beta \cdot l_{\ell^*}$$
+
+90% 权重在完整计算结果上（$\beta=0.1$ 时），10% 在检测层的"直觉"上。这不是替换——是微调。β=0 退化为正常生成，β=1 退化为在 L20 处直接"截断"模型。
+
+**为什么 β 必须极小.** L20 的 logits 缺失了 7 层 Transformer 计算——不只是缺失了可能的"覆盖"，也缺失了正常的推理。直接跳到 L20（β=1）等于让模型在思考到 71% 处强行输出，logits 质量自然很差。β=0.1 是"主要相信完整结果，但给检测层一点发言权"。
+
+**为什么是 logit 空间.** Section 12 和 Phase A.5.2 确认了隐藏空间干预的 RMSNorm 瓶颈：对于 $\|\delta\|=1$ 的隐藏空间扰动，$\Delta\log P(y_{\text{true}}) \approx 0.084$ nats——衰减因子约 44×。logit 空间只有 softmax 和 argmax，不存在这个瓶颈。
+
+**为什么是逐 token 动态.** 与 v-based 方法的本质区别：$l_{\ell^*} - l_L$ 是在每个 token、每个样本上实时计算的。它不经过 $\mathbb{E}_x[\cdot]$ 的边缘化——天然保留了问题条件信息 $(x)$。这是 TLDC 能产生非零效应的根本原因（而 10+ 种 v-based 范式全部 Δ=0%）。
+
+**实验结果 (Phase 14c, Qwen3-1.7B, TriviaQA).**
+
+| β | KW Δ | KC Δ | DK Δ | All Δ |
+|---|------|------|------|------|
+| 0.05 | +0.0% | +0.0% | +0.0% | +0.0% |
+| **0.10** | **+28.6% (2/7)** | 0.0% | 0.0% | +4.0% |
+| 0.15 | +0.0% | 0.0% | -5.7% | -2.0% |
+| 0.30 | +0.0% | -25.0% | -5.7% | -8.0% |
+| 0.50 | +0.0% | -25.0% | -17.1% | -16.0% |
+| 0.90 | +0.0% | -50.0% | -25.7% | -26.0% |
+
+跨三种子验证（n=50 per seed）：聚合 3/21 KW 样本被修正（14.3%），可复现但效应微弱。
+
+**Gate D2 的结果揭示了一个关键事实**：L20 和 L27 对 $y_{\text{true}}$ 的 rank 在 50/50 样本上**完全相同**。这意味着 L20→L27 的这 7 层计算并不改变"哪个 token 是正确答案"这个 rank 信息——覆盖不是以"翻转真相关注度排名"的方式运作的。TLDC 的有效机制是**调整 logit margin**：在那些 $y_{\text{true}}$ 与 argmax 的 logit 差距很小的 KW 样本上，β=0.1 的微调足以翻转结果。这同时解释了为什么效应很小——大多数 KW 样本的 margin 太大，微调不足以跨越。
+
+**与 DoLa 的关键区别.** DoLa (Chuang et al., 2024) 对比的是早期层（通常 L0）与后期层——早期层几乎不含信息，差值只是噪声，因此在我们此前的 Qwen3-1.7B HellaSwag 测试中 Δ=-0.024。TLDC 将"早期层"替换为检测峰值层（truth 信息最丰富的层），差值的语义从"噪声"变为"覆盖的足迹"。
+
+#### 14.2.7 β 敏感性的理论解释
+
+考虑 logit 空间中 $y_{\text{true}}$ 的排名与 argmax 之间的距离。定义 logit margin：
+
+$$m(x) = \text{logit}_{\text{argmax}} - \text{logit}_{y_{\text{true}}}$$
+
+TLDC 有效的充要条件为 $\beta \cdot (l_{\ell^*} - l_L)$ 在 $y_{\text{true}}$ 分量上缩小了 $m(x)$ 并翻转了 argmax。由于 $(l_{\ell^*} - l_L)$ 的各项分量量级约为 $10^0$-$10^1$（logit 空间的标准偏差），而 $\beta=0.1$ 的扰动约 0.1-1.0 logit 单位，只能在 $m(x)$ 本身就很小（<~1 logit）的样本上起作用。
+
+当 $\beta \geq 0.3$ 时，扰动过大——L20 的噪声分量（缺失的 7 层合理计算导致的随机 logit 波动）开始主导，表现为 know-correct 和 don't-know 样本上的全面退化。
+
+这一分析指向一个改进方向：使用样本自适应的 β_t，而非全局固定值（见 Phase 15.2c）。
+
 ---
 
 ### 14.3 方向 2: 知识覆盖电路与反覆盖干预
