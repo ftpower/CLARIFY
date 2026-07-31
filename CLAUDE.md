@@ -8,6 +8,18 @@
 2. Read the latest plan in `~/.claude/plans/CLARIFY/` for current priorities and next steps
 3. Full project context is in `.claude/projects/-home-user-ft-Git-Repository-CLARIFY/memory/MEMORY.md`
 
+## Session End（用户说"退出"/"quit"/"结束了"等）
+
+在结束会话前，必须逐项检查并同步：
+
+1. **今日进度**：哪些完成了、哪些失败、哪些待定 — 更新到对应 plan 文件
+2. **关键结论**：新的实验数据、gate 结果、机制发现 — 更新到 `memory/` 对应文件
+3. **下一步计划**：下午/明天要做什么，依赖和优先级 — 更新 plan 的行动清单
+4. **未 push 的 commit**：提醒用户 `git push`
+5. **报告给用户**：简洁列出同步了哪些文件
+
+**原则**：下次会话能从 plan + memory 立即恢复状态，不依赖聊天记录。
+
 ## Environment
 
 ### 本地 (WSL2)
@@ -22,6 +34,12 @@ GPU: RTX 5090 32GB | CPU: 25 核 | RAM: 90 GB
 模型缓存: `~/.cache/huggingface/hub/`
 长期执行命令用 `screen` 或 `tmux`，防 SSH 断开中断
 代码同步: 本地修改 → Claude 负责 commit → 用户 push → 服务器 `git pull`
+服务器文件下载到本地:
+  - **在本地终端执行**（不是在服务器上），`<port>` 和 `<host>` 从 AutoDL 控制台 SSH 登录命令获取
+  - `mkdir -p D:\Download`（如目录不存在）
+  - `scp -rP <port> root@<host>:/root/CLARIFY/<path> D:\Download\`
+  - 示例: `scp -rP 23402 root@connect.westd.seetacloud.com:/root/CLARIFY/experiments/phase16_untried/outputs_phase16 D:\Download\`
+  - WSL 用户: 下载到 `~` 即可，`scp -rP <port> root@<host>:/root/CLARIFY/<path> ~/`
 
 ## Key Conventions
 
