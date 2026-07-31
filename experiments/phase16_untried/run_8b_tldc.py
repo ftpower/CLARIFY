@@ -219,8 +219,8 @@ def tldc_greedy_generate(
 def quick_detection_scan(model, tokenizer, device, samples, n_layers):
     """Quick AUROC scan across all layers to find detection peak ℓ*.
 
-    Uses compute_v approach: for each layer, compute v from all samples,
-    then dot with each sample's h to get scores.
+    Does generation first (to get labels), then re-runs with hooks to
+    extract hidden states — avoids holding all layer states during generation.
     """
     from sklearn.metrics import roc_auc_score
 
@@ -228,11 +228,29 @@ def quick_detection_scan(model, tokenizer, device, samples, n_layers):
         f"\n  Running quick detection scan ({len(samples)} samples, {n_layers} layers)..."
     )
 
-    # Extract h at all layers for all samples
-    all_h = {lyr: [] for lyr in range(n_layers)}
+    # Phase 1: Generate answers to get correctness labels
+    print("  Phase 1/2: Generating answers...")
     labels = []
+    generated_texts = []
+    for sample in tqdm(samples, desc="  Generating"):
+        prompt = format_prompt(
+            sample["question"], sample.get("context", ""), dataset="triviaqa"
+        )
+        gen_text = greedy_generate(model, tokenizer, prompt, device)
+        generated_texts.append(gen_text)
+        is_correct = check_correct(gen_text, sample["answers"], dataset="triviaqa")
+        labels.append(int(is_correct))
+        torch.cuda.empty_cache()
 
-    for sample in tqdm(samples, desc="  Extracting h"):
+    labels = np.array(labels)
+    n_correct = int(labels.sum())
+    print(f"  Correct: {n_correct}/{len(samples)} = {n_correct / len(samples):.1%}")
+
+    # Phase 2: Extract h at all layers (no generation in this pass)
+    print("  Phase 2/2: Extracting hidden states...")
+    all_h = {lyr: [] for lyr in range(n_layers)}
+
+    for i, sample in enumerate(tqdm(samples, desc="  Extracting h")):
         prompt = format_prompt(
             sample["question"], sample.get("context", ""), dataset="triviaqa"
         )
@@ -241,7 +259,6 @@ def quick_detection_scan(model, tokenizer, device, samples, n_layers):
             tokens = tokens[:, :1024]
         input_len = tokens.shape[1]
 
-        # Capture all layers in one pass
         storage = {}
 
         def make_capture(lyr):
@@ -258,28 +275,14 @@ def quick_detection_scan(model, tokenizer, device, samples, n_layers):
         with torch.no_grad():
             _ = model.run_with_hooks(tokens, fwd_hooks=hooks)
 
-        # Generate answer
-        gids = []
-        current_tokens = tokens.clone()
-        for _step in range(20):
-            nid = int(model(current_tokens)[0, -1, :].argmax().item())
-            if nid == tokenizer.eos_token_id:
-                break
-            gids.append(nid)
-            current_tokens = torch.cat(
-                [current_tokens, torch.tensor([[nid]], device=device)], dim=1
-            )
-            if current_tokens.shape[1] > 1024:
-                break
-
-        generated = tokenizer.decode(gids).strip()
-        is_correct = check_correct(generated, sample["answers"], dataset="triviaqa")
-        labels.append(int(is_correct))
-
+        # Move to CPU immediately, delete GPU tensors
         for lyr in range(n_layers):
             all_h[lyr].append(storage[lyr].float().cpu().numpy())
+            del storage[lyr]
 
-    labels = np.array(labels)
+        del tokens, storage
+        if (i + 1) % 10 == 0:
+            torch.cuda.empty_cache()
 
     aurocs = {}
     for lyr in tqdm(range(n_layers), desc="  Computing AUROC"):
