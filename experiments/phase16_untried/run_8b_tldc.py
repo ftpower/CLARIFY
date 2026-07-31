@@ -369,7 +369,7 @@ def main():
     print(f"  Device: {device}")
     if torch.cuda.is_available():
         print(
-            f"  GPU memory: {torch.cuda.get_device_properties(0).total_mem / 1024**3:.0f} GB"
+            f"  GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1024**3:.0f} GB"
         )
     print(f"  Loaded in {time.time() - t0:.1f}s")
 
