@@ -311,6 +311,121 @@ $$\beta_t(x) = \beta_0 \cdot \frac{\|S_{\ell^*\to L}^{(t)}(x)\|}{\mathbb{E}[\|S_
 
 校验子范数大 → 信道作用强 → 更积极地纠错。
 
+### 7.4 逐次干扰消除 (Successive Interference Cancellation, SIC)
+
+**通信原型.** MIMO 多用户检测中，SIC 是最经典的 nonlinear detection 策略：解调最强用户信号 → 从接收矢量中减去已解调信号的重构 → 解调次强用户 → 迭代。这利用了信号强度的差异性——强者先分离，弱者随后在更干净的信号中检测。
+
+**LLM 映射.** 当前 TLDC 对所有 token 施加统一的比例惩罚 $-\beta \cdot g(t|x)$。但由于所有 token 的 $g(t|x) > 0$，这同时惩罚了 $y_{\text{true}}$。SIC 替代为**迭代定向压制**：
+
+$$\begin{aligned}
+l^{(0)} &\leftarrow l_L + \beta \cdot (l_{\ell^*} - l_L) \quad \text{(初始 TLDC)} \\
+\text{for } k &= 1, \ldots, K: \\
+& t_k \leftarrow \arg\max_t \; g(t|x) \quad \text{(当前最 over-hyped 的 token)} \\
+& l^{(k)}[t_k] \leftarrow l^{(k-1)}[t_k] - \gamma \cdot g(t_k|x) \quad \text{(定向压制)} \\
+& \text{if } \arg\max l^{(k)} = y_{\text{true}}: \text{break}
+\end{aligned}$$
+
+**与 TLDC 的本质区别**:
+
+| | TLDC | SIC |
+|---|---|---|
+| 惩罚模式 | 比例惩罚（所有 token 按 $g$ 比例减） | 定向压制（只压制若干 over-hype 最严重的 token） |
+| $y_{\text{true}}$ 受影响 | 是（$g(y_{\text{true}}|x) > 0$ 也被削） | 否（只要 $y_{\text{true}}$ 不在 top over-hype 列表） |
+| 新增利用的信息 | $g(t\|x)$ 的绝对值 | $g(t\|x)$ 在词表上的**相对排名** + 定向手术 |
+| 可解释性 | 黑箱 logit 插值 | 每一步可解：压制了哪个 token、效果如何 |
+
+**为什么在理论上合理.** SIC 有效的前提是 over-hype 集中在少数 token 上（即 $g_{\text{override}}(t|x)$ 稀疏）。Phase 15.2b 的逐 token 分析提供了支持性证据：Sample 1 Step 13 中，"led" 的 $g = +13.60$，是 "called" 的 $g = +6.37$ 的 2.1×——over-hype 确实集中在特定的 distractor 上。
+
+**预期门控**:
+- S1: $g(t|x)$ 的 top-5 token 占 >50% 总 $g$ 质量（稀疏性检验）
+- S2: SIC KW Δ > TLDC KW Δ（定向压制优于比例惩罚）
+- S3: SIC KC Δ ≥ 0%（KC 不会被误伤——因为 $y_{\text{true}}$ 的 $g$ 通常不是最大的）
+
+**计算成本.** 纯 logit 空间操作，零额外前向传播。在 1.7B 上 <5 min 即可完成 50 样本的参数扫描。
+
+### 7.5 稀疏纠错 (Sparse Error Recovery / Compressed Sensing)
+
+**通信原型.** 若错误向量 $e$ 是稀疏的（只有少数比特翻转），压缩感知理论保证可以通过 L1 最小化从欠定系统中精确恢复 $e$。这是 L1 正则化在稀疏信号恢复中的核心理论基础。
+
+**LLM 映射.** 关键假说：$g_{\text{override}}(t|x)$ 是词表空间中的稀疏信号——只有少数 distractor token 获得显著的覆盖增益，大多数 token 的 $g(t|x)$ 主要是正当计算 $g_{\text{legit}}(t|x)$。
+
+若此假说成立，将 TLDC 的均匀校正替换为稀疏校正：
+
+$$\min_{\delta \in \mathbb{R}^{|\mathcal{V}|}} \|(l_L + \delta) - l_{\ell^*}\|_2^2 + \lambda \|\delta\|_1$$
+
+L1 惩罚鼓励 $\delta$ 中只有少数分量非零。等价于：只在被 over-hype 严重的少数 token 上做大幅校正，其他 token 的 logit 基本不动。
+
+**与 TLDC 的对比**:
+- TLDC: $\delta_t = -\beta \cdot g(t|x)$，所有 token 都有非零校正
+- L1 稀疏: $\delta_t \neq 0$ 仅在少数 over-hyped token 上，且校正量由优化问题自动确定
+
+**诊断实验（先于实现）**:
+1. 对 50 个 KW 样本，计算每步的 $g(t|x)$ 在词表上的分布
+2. 度量稀疏性：top-5 token 占总 $g(t|x)$ 质量的比例
+3. 若 >80% → L1 稀疏纠错值得做
+4. 若 <50% → 放弃（override 不是稀疏结构）
+
+**预期门控**:
+- P1: top-5 token 占 >80% 总 $g$ 质量（稀疏性成立）
+- P2: L1 校正 KW Δ > TLDC KW Δ
+- P3: λ 的物理含义可解释（λ* 对应的非零分量数 ≈ 被 over-hype 的 token 数）
+
+### 7.6 信道估计通道 (Channel Sounding Pass)
+
+**通信原型.** 无线通信中，接收端需要估计信道响应才能正确均衡。常用策略：(a) 基于导频——发送已知符号，接收端对比收-发差异估计信道；(b) 盲估计——仅从接收信号的统计特性推断信道；(c) 半盲——结合少量导频和统计信息。
+
+**LLM 映射.** 当前 TLDC 对所有样本使用固定 β，等价于假设信道是平稳的（$g(t|x)$ 的统计在所有输入上相同）。但 override 模式高度依赖输入——一个地理问题和一个人名问题的 distractor 分布很可能不同。
+
+信道估计策略：
+
+**(a) 离线信道探测（导频辅助）.** 用校准集（已知 KC/KW/DK 标签）统计信道特性：
+
+$$\bar{g}_{\text{KW}}(\ell) = \mathbb{E}_{x \in \mathcal{D}_{\text{KW}}}[g(\arg\max l_L | x, \ell)]$$
+
+即：在 KW 样本上，计算 argmax token 从层 ℓ 到层 L 的平均增益。类似地计算 $\bar{g}_{\text{KC}}(\ell)$。二者的比值 $\bar{g}_{\text{KW}} / \bar{g}_{\text{KC}}$ 反映了每层的"override/正当计算"相对强度——比值高的层更适合作为参考层或给更大 β。
+
+**(b) 在线探测（样本级 CQI 精炼）.** §7.3 的 CQI 方案用 $\|S(x)\|$ 作为信道质量代理。可精炼为多层 CQI：
+
+$$\text{CQI}(x) = \frac{\text{JS}(P_{\ell^*} \| P_L)}{\mathbb{E}_{x'}[\text{JS}(P_{\ell^*} \| P_L)]}$$
+
+即 JS 散度归一化为信道质量指示。CQI > 1 → override 比平均更强 → 需要更大 β。
+
+**(c) 层选择性探测.** 不为每一层都用做参考——先探测哪些层的 $\bar{g}(\ell)$ 表现出最强的"override 信号"（即 $\bar{g}_{\text{KW}}(\ell) \gg \bar{g}_{\text{KC}}(\ell)$），只在这些层上做分集合并。
+
+**预期门控**:
+- C1: $\bar{g}_{\text{KW}}(\ell)$ 随层有结构性变化（非纯噪声）
+- C2: $\bar{g}_{\text{KW}} / \bar{g}_{\text{KC}}$ 在后期层（L24-L27）高于早期层（L20-L24）
+- C3: 基于信道估计的层选择优于固定选择（L10, L15, L20, L25 → 选 top-3）
+
+### 7.7 迭代 Turbo 译码
+
+**通信原型.** Turbo 码和 LDPC 码通过**多个分量译码器之间交换外部软信息**实现逼近 Shannon 限的性能。核心思想：每个分量译码器从不同的"视角"（不同的校验约束）观察接收信号，产出的外部信息不包含该分量译码器已知的先验——避免了正反馈。
+
+**LLM 映射（扩展 §5.4）.** 每个参考层是一个分量译码器，提供对信道噪声的一个独立估计。关键设计：
+
+```
+初始化: y^(0) = y_L（最终层 logits）
+
+for t = 1, 2, ..., T:
+    1. 选择当前最有利的参考层 ℓ_t（如 AUROC 最高且尚未被过度使用的层）
+    2. 计算外部校验子（扣除前一轮的先验）:
+       S_t = y_{ℓ_t} - y^(t-1)               # 原始校验子
+       S_t^ext = S_t - α_{t-1} · S_{t-1}     # 减去前一轮分量 → 外部信息
+    3. 更新: y^(t) = y^(t-1) + α_t · S_t^ext
+    4. 若 ||S_t^ext|| < ε 或 |argmax(y^(t)) - argmax(y^(t-1))| = ∅: break → 收敛
+```
+
+**收敛性分析.** 由于 $S_t = S_{\text{legit}} + S_{\text{override}}$ 不可分离（§4.2），存在最优迭代次数 $T^*$。超过 $T^*$ 后，$S_{\text{legit}}$ 的积累效应导致退化。$T^*$ 应通过验证集扫描确定。
+
+**与 EGC/MRC 合并的区别**:
+- EGC/MRC: 多个参考层信号在**一步内**合并 → 各层的噪声直接叠加
+- Turbo: 多个参考层**轮流**提供信息 → 每轮只取当前最优参考层的外部信息，避免噪声叠加
+
+**预期门控**:
+- T1: $T^* \geq 2$（多轮迭代优于单轮）
+- T2: Turbo (T=T*) KW Δ > EGC KW Δ（迭代交换优于一步合并）
+- T3: T > T* 时性能退化（收敛→发散，$S_{\text{legit}}$ 积累）
+
 ---
 
 ## 8. 可检验假说
@@ -329,6 +444,14 @@ $$\beta_t(x) = \beta_0 \cdot \frac{\|S_{\ell^*\to L}^{(t)}(x)\|}{\mathbb{E}[\|S_
 | H8 | 有效独立分集支路数 $K_{\text{eff}} \ll L$ | §6.3 引理 1 | Gram 矩阵有效秩 |
 | H9 | 纠错容量与 logit margin 下尾概率成正比 | §6.2 定理 2 | 跨规模 margin 分布比较 |
 | H10 | 单固定方向干预容量为零——独立于方向来源 | §5.1 定理 1 | 任何不依赖 $x$ 的方向 |
+| H11 | override 误差在词表空间稀疏——top-5 token 占 >80% 总 $g$ 质量 | §7.5 稀疏纠错 | 200 KW 样本 $g(t\|x)$ 分布 |
+| H12 | SIC 定向压制 > TLDC 比例惩罚（KW Δ） | §7.4 SIC | SIC vs TLDC, β sweep |
+| H13 | SIC 对 KC 零误伤（KC Δ ≥ 0%） | §7.4 SIC | SIC 在 KC 子集上的 Δ |
+| H14 | $\bar{g}_{\text{KW}}(\ell) / \bar{g}_{\text{KC}}(\ell)$ 在后期层（L24-L27）> 早期层（L20-L24）| §7.6 信道探测 | 200 校准样本的逐层统计 |
+| H15 | 基于信道探测的层选择（top-3 ratio 层）优于固定选择（等间距）| §7.6 信道探测 | 探测层选择 vs 等间距层选择 |
+| H16 | Turbo 迭代 $T^* \geq 2$，多轮外部信息交换优于单轮合并 | §7.7 Turbo | $T=1..5$ 扫描 |
+| H17 | HARQ 门控 TLDC：DK 退化显著低于无条件 TLDC | §7.4, 通信 HARQ 原理 | $\|S\|$ 阈值门控 on/off |
+| H18 | L1 稀疏校正的 λ 最优值对应非零分量数 ≈ 实际被 over-hype 的 token 数 | §7.5 稀疏纠错 | $\lambda$ sweep + 非零分量计数 |
 
 ---
 
@@ -343,6 +466,16 @@ $$\beta_t(x) = \beta_0 \cdot \frac{\|S_{\ell^*\to L}^{(t)}(x)\|}{\mathbb{E}[\|S_
 4. **编码-译码的联合设计**: 如果被允许在训练时对 $\theta$ 做微小修改（如添加低秩适配器），能否显式地为推理时译码器设计对偶的码？类似脏纸编码 (dirty paper coding)——发送方知道干扰存在时，可以预编码来减轻干扰。
 
 5. **跨模型规模的分集增益标度律**: $K_{\text{eff}}$ 是否随模型层数增长？如果 $K_{\text{eff}} \propto L^{0.5}$，大模型天然具有更大的纠错潜力。
+
+6. **override 误差的稀疏性**: §7.5 假设 override 在词表空间中稀疏。如果此假说成立，压缩感知/L1 方法可以直接应用。稀疏性是否跨模型规模、跨任务泛化？稀疏模式是否可预测（如集中在高频 token、语义相关 token）？
+
+7. **信道估计的最优导频设计**: §7.6 提出用校准集做信道探测。最少需要多少"导频样本"（已知 KC/KW/DK 标签）才能稳定估计 $\bar{g}(\ell)$？能否设计不需要标签的盲信道估计（如利用 L20-L27 的 logit 差异的自监督信号）？
+
+8. **SIC 的最优消除顺序**: §7.4 按 $g(t|x)$ 降序消除。是否存在更优的顺序——如按 token 的语义类别、或按 L20 置信度加权？误消除（把正当计算当 override 消除）的损失函数是什么？
+
+9. **条件信道容量的经验估计**: 能否从数据中直接估计 $C_{\text{truth}}(\theta, \mathcal{D})$？这需要估计 $I(\text{rank}_{L20}(y_{\text{true}}); \text{argmax}_L)$——L20 的 rank 信息与 L27 的决策之间的互信息。这是所有译码器的理论上界。
+
+10. **级联幻觉的 HARQ 阻断**: §7.4 HARQ 门控的一个关键优势是阻断幻觉的 token 级联。一个错误的 token 会增加后续 token 也错误的概率——HARQ 在第一步检测并纠正后，能否阻止级联？量化级联阻断效应。
 
 ---
 

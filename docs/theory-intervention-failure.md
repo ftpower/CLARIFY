@@ -1157,6 +1157,185 @@ TLDC 有效的充要条件为 $\beta \cdot (l_{\ell^*} - l_L)$ 在 $y_{\text{tru
 
 这一分析指向一个改进方向：使用样本自适应的 β_t，而非全局固定值（见 Phase 15.2c）。
 
+#### 14.2.8 逐 token 机制验证：TLDC 是不对称惩罚，非 y_true 推升
+
+> **Phase 15.2b** | 2026-07-31 | 脚本: `experiments/lin_theory/analyze_tldc_per_token.py`
+
+**实验设计.** 对 β=0.10, seed=123 下被 TLDC 修正的 2 个 KW 样本，逐 token 捕获 $l_{\ell^*}$, $l_L$, $l_{\text{combined}}$ 的 top-3 token 和每个 token 上的 TLDC delta $\delta(t) = l_{\ell^*}(t) - l_L(t)$。
+
+**核心发现：TLDC delta 对 y_true 恒为负。** 在全部生成步上，$\delta(y_{\text{true}}) < 0$——TLDC 在每一步都让正确答案的 logit **更低**，不是更高：
+
+| 指标 | Sample 1 (年份) | Sample 2 (公路) | 全部 KW (n=7) |
+|------|:---:|:---:|:---:|
+| Mean $\delta$ on $y_{\text{true}}$ | **-12.65** | **-11.94** | **-10.32** |
+| Mean $\delta$ on distractor | **-9.59** | **-19.41** | **-17.28** |
+| 有效机制 | 压 down distractor | 压 down distractor | 压 down distractor |
+
+**这意味着 TLDC 不是"推高正确答案"——它是"惩罚被 L27 over-hype 的 token"。** 由于所有 token 在 L27 都被放大（后期层增加置信度），$\delta(t)$ 对所有 $t$ 都为负。但关键是不对称性：被 over-hype 最严重的 token 受到的惩罚最大。
+
+**具体案例 1（Sample 1, Step 13）.** L27 argmax 从 "led" → TLDC argmax "called"：
+
+$$
+\begin{aligned}
+\text{"led"}: &\quad l_{\ell^*} = 6.54,\; l_L = 20.14,\; \delta = -13.60,\; \text{penalty} = -1.36 \rightarrow l_{\text{combined}} = 18.78 \\
+\text{"called"}: &\quad l_{\ell^*} = 13.49,\; l_L = 19.86,\; \delta = -6.37,\; \text{penalty} = -0.64 \rightarrow l_{\text{combined}} = 19.22 \quad \text{✅}
+\end{aligned}
+$$
+
+"led" 被 L27 过度放大（+13.60），TLDC 对其施加了 2.1× 于 "called" 的惩罚，后者胜出。
+
+**具体案例 2（Sample 2, Step 5）.** L27 argmax `</think>` → TLDC argmax "The"（打破模型自我截断的思维链模式，恢复流畅生成）：
+
+$$
+\begin{aligned}
+\text{"</think>"}: &\quad l_{\ell^*} = -8.29,\; l_L = 18.05,\; \delta = -26.34,\; \text{penalty} = -2.63 \rightarrow l_{\text{combined}} = 15.41 \\
+\text{"The"}: &\quad l_{\ell^*} = 11.27,\; l_L = 16.94,\; \delta = -5.67,\; \text{penalty} = -0.57 \rightarrow l_{\text{combined}} = 16.37 \quad \text{✅}
+\end{aligned}
+$$
+
+`</think>` 从 L20 (-8.29) 到 L27 (18.05) 被放大了 26.34 个 logit 单位——这是极端的 over-hype。TLDC 惩罚了这一异常放大，让 "The" 胜出。
+
+**机制公式（精炼）.** TLDC 对每个 token 施加的惩罚与其 L20→L27 放大程度成正比：
+
+$$\text{penalty}(t) = \beta \cdot \underbrace{(l_L(t) - l_{\ell^*}(t))}_{\text{L20→L27 放大程度}}$$
+
+$$l_{\text{combined}}(t) = l_L(t) - \text{penalty}(t) = (1-\beta) \cdot l_L(t) + \beta \cdot l_{\ell^*}(t)$$
+
+**这个公式解释了 TLDC 的所有关键行为：**
+
+1. **β 必须很小（0.03-0.10）**：所有 token 在 L27 都有放大（$l_L(t) > l_{\ell^*}(t)$），β 太大会无差别惩罚，导致全面退化
+2. **KC 零退化**：正确 token 的 L20→L27 放大通常较小（L20 已有强信号），受罚也小
+3. **DK 退化可控**：Don't-know 样本上不存在正确的 y_true，但 TLDC 惩罚了某些 over-hyped 噪声 token，可能导致生成偏离 baseline 但不一定变差
+4. **跨规模泛化**：惩罚机制只依赖层间相对差异，不依赖绝对 logit 量级 → 1.7B 和 8B 上行为一致
+5. **非 rank 机制**：TLDC 不恢复 rank 信息（Gate D2: 0/50），而是调整 **logit margin**——通过不对称惩罚，缩小 argmax 与真正正确 token 之间的差距
+
+**修正后的 TLDC 定义.** 基于以上机制分析，TLDC 的本质不是"往早期层回退"，而是：
+
+> **TLDC = 逐 token 的 L20→L27 过度放大检测与惩罚器。** 它利用检测峰值层作为基准，对后期层过度放大的 token 施加比例惩罚，使 logit 分布向信息更丰富的早期层回退。
+
+这解释了为什么它是首个有效的干预范式：与所有 v-based 方法不同，TLDC 不试图"注入外部真相信号"（v 已被证明是 readout 方向，不能用于 control），而是**校正模型自身的计算偏差**（L20→L27 的过度放大）。
+
+**⚠️ 需要注意.** 被标记为 "corrected" 的 2 个 KW 样本的实际生成文本中均未包含正确答案（Sample 1 未输出 "1977"，Sample 2 输出 "A68" 而非 "A66"）。`check_correct` 的模糊匹配可能产生了假阳性——这不影响机制结论（TLDC 确实改变了 argmax 选择），但提示 TLDC 的实际修正效果可能比报告的 14.3% 更弱，需要在后续实验中用严格精确匹配重新评估。
+
+#### 14.2.9 信息论视角：TLDC 作为条件信道均衡器
+
+> 本节从信息论出发，解释 TLDC 为什么有效、为什么 β 必须很小、以及为什么 v-based 方法必然失败。
+
+##### A. 信道模型
+
+将 L20→L27 的 7 层计算视为一个**有噪信道**。输入是 L20 在 token $t$ 上的 logit $l_{\ell^*}(t)$，输出是 L27 的 logit $l_L(t)$。信道增益为：
+
+$$g(t | x) = l_L(t) - l_{\ell^*}(t)$$
+
+关键性质：
+- $g(t|x) > 0$ 对所有 $t$ 成立——信道总是**放大**（后期层增加置信度）
+- $g(t|x)$ **依赖输入 $x$**——同一 token 在不同问题上的放大程度不同
+- $g(t|x)$ **依赖 token $t$**——不同 token 在同一问题上被放大程度不同
+
+**信道增益的分解.** $g(t|x)$ 可以分解为两个不可直接观测的分量：
+
+$$g(t|x) = g_{\text{legit}}(t|x) + g_{\text{override}}(t|x)$$
+
+- $g_{\text{legit}}(t|x)$：正当的进一步计算——L20 的粗糙估计被精化，真正的正确 token 获得额外证据。这是**信号**。
+- $g_{\text{override}}(t|x)$：覆盖偏置——某些 distractor token（如高频模式补全、上下文诱导的捷径）被不成比例地放大。这是**噪声**。
+
+二者在同一个变换中**纠缠**——无法从最终 logits 中直接分离。
+
+##### B. TLDC 作为迫零均衡器 (Zero-Forcing Equalizer)
+
+TLDC 的操作等价于对信道施加逆变换：
+
+$$l_{\text{combined}}(t) = l_L(t) - \beta \cdot g(t|x) = l_L(t) - \beta \cdot (l_L(t) - l_{\ell^*}(t))$$
+
+这是经典的**迫零（Zero-Forcing, ZF）均衡**策略：估计信道增益 $\hat{g}(t) = l_L(t) - l_{\ell^*}(t)$，然后从接收信号中减去一部分。
+
+**迫零均衡的固有问题**：它同等地抑制 $g_{\text{legit}}$ 和 $g_{\text{override}}$。由于：
+
+$$\mathbb{E}_t[g(t|x)] > 0 \quad \text{且} \quad g_{\text{override}}(\text{distractor}|x) \gg g_{\text{override}}(y_{\text{true}}|x)$$
+
+均衡后的净效应取决于每个 token 上 $g_{\text{legit}}$ 和 $g_{\text{override}}$ 的相对比例：
+
+- **distractor token**: $g_{\text{override}}$ 占比高 → 均衡大量削减 → 有效
+- **$y_{\text{true}}$ token**: $g_{\text{legit}}$ 占比高 → 均衡也削减了正当信号 → 副作用
+- **其他 token**: 中间状态
+
+这直接解释了 β 的敏感性——β 越大，迫零越激进，$y_{\text{true}}$ 上的正当信号也被越严重地削弱。
+
+##### C. 信道容量的上界
+
+L20 和 L27 共享关于 $x$ 的全部信息（同一输入、同一批 token、同一条计算路径）。它们的互信息为：
+
+$$I(l_{\ell^*}; l_L | x) = H(l_{\ell^*}|x) + H(l_L|x) - H(l_{\ell^*}, l_L|x)$$
+
+一个关键观察（来自 Gate D2 数据）：**L20 和 L27 对 $y_{\text{true}}$ 的 rank 完全一致（0/50 差异）**。这意味着：
+
+$$I(\text{rank}_{\ell^*}(y_{\text{true}}); \text{rank}_L(y_{\text{true}})) = H(\text{rank})$$
+
+即 rank 信息在信道中**无损传输**。覆盖不改变 "哪个 token 是正确答案" 的排序——它只改变 **logit margin**。
+
+**这是 TLDC 能工作的根本信息论原因**：信道保留了 rank 信息（无损），只在线性 logit 幅度上引入失真。因此，一个简单的线性均衡器（TLDC）就足以部分恢复——不需要非线性变换来"重建丢失的 rank"。
+
+##### D. 为什么 v-based 方法必然失败：信道条件性
+
+所有 v-based 方法在信息论上等价于构建一个**非条件均衡器**：
+
+$$\hat{v} = \mathbb{E}_{(x,y)}[h|\text{correct}] - \mathbb{E}_{(x,y)}[h|\text{wrong}]$$
+
+这个 $\hat{v}$ 是信道增益在所有训练样本上的**聚合期望**，丢失了条件信息 $x$。
+
+但信道的真实增益 $g(t|x)$ 是 $x$ 的函数。非条件均衡器的误差为：
+
+$$\text{error}(x) = g(t|x) - \mathbb{E}_{x'}[g(t|x')]$$
+
+由于 override 模式高度依赖具体问题（一个地理问题的 distractor 模式与一个历史问题完全不同），$\text{Var}_x[g(t|x)]$ 很大，非条件均衡器的误差也很大。
+
+**信息论表述**：v-based 方法是**无记忆信道的固定译码器**——它假设信道特性对所有输入相同。但实际上 L20→L27 是一个**有记忆/有状态的信道**——信道特性随输入 $x$（即"消息"）变化。对这样的信道，固定译码器的最优误码率下界远高于条件译码器。
+
+##### E. 率失真视角：β 的最优选择
+
+将 TLDC 视为率失真问题。定义两个失真：
+
+- $D_{\text{override}}$：残留的覆盖偏置（希望最小化 → β 大）
+- $D_{\text{legit}}$：被误伤的正当计算（希望最小化 → β 小）
+
+二者不可同时最小化——这是率失真的基本权衡。最优 β 在率失真曲线上：
+
+$$\beta^* = \arg\min_\beta \left[ D_{\text{override}}(\beta) + \lambda \cdot D_{\text{legit}}(\beta) \right]$$
+
+其中 $\lambda$ 是正当计算的相对重要性。经验上 β* ∈ [0.03, 0.10]，意味正当计算的损失权重远高于覆盖的消除——即**宁可保留部分覆盖，也不愿破坏正当计算**。
+
+这也解释了为什么自适应 β（Phase 15.2c 方向）优于固定 β：当 $g_{\text{override}}$ 占比高时（JS 散度大），应增加 β 以更多均衡；当 $g_{\text{legit}}$ 占比高时（JS 散度小），应减小 β 以减少误伤。
+
+##### F. 信息处理不等式与 TLDC 的局限性
+
+由信息处理不等式：对马尔可夫链 $X \to H_{\ell^*} \to H_L \to \hat{Y}_{\text{TLDC}}$（注意 $\hat{Y}_{\text{TLDC}}$ 是 $H_{\ell^*}$ 的确定性函数——因为 $l_{\text{combined}} = (1-\beta)l_L + \beta l_{\ell^*}$，而 $l_L$ 本身由 $H_{\ell^*}$ 通过后续层决定），
+
+$$I(X; \hat{Y}_{\text{TLDC}}) \leq I(X; H_{\ell^*})$$
+
+**这条不等式的含义**：TLDC 译码器不能访问 $H_{\ell^*}$ 中不存在的信息。它无法恢复 L20 就没有编码的知识。
+
+**这条不等式的非含义**：它**不**意味着 TLDC 的 argmax 准确率必须 ≤ L20 早退的 argmax 准确率。信息量（互信息）与分类准确率是不同的指标。TLDC 使用的插值函数 $f_{\text{TLDC}}(H_{\ell^*}) = (1-\beta) \cdot l_L + \beta \cdot l_{\ell^*}$ 和 L20 早退函数 $f_{\text{L20}}(H_{\ell^*}) = l_{\ell^*}$ 是不同的分类器——两者都只依赖 $H_{\ell^*}$，但可以有不同的 argmax 准确率。
+
+实验证实了这一点：在 KW 子集上（n=100, seed=123），L20 早退贪心解码的精确匹配准确率为 **0/11 (0.0%)**，而 TLDC (β=0.01) 的精确匹配准确率为 **1/11 (9.1%)**。TLDC 的插值是一种比纯 L20 早退更好的分类器——它利用了 L20 和 L27 的互补信息，即 L27 额外层计算提供了有益的 refinement（$g_{\text{legit}}$），尽管也引入了覆盖偏置（$g_{\text{override}}$）。
+
+对于 know-wrong 样本，模型在 L20 已经"知道"答案（rank ≤ 50），但 L27 选择不输出。TLDC 在 **L20 已知但 L27 压制** 的子集上有效（精确匹配：1/11 ≈ 9.1% KW；模糊匹配：4/11 ≈ 36.4% KW），而在 **L20 就不知道** 的子集上完全无效（DK 子集 Δ≈0 或退化）——这与"不能恢复 L20 缺失的信息"的约束完全一致。
+
+##### G. 总结：TLDC 的信息论本质
+
+| 概念 | TLDC 中的对应 |
+|------|-------------|
+| 信道 | L20→L27 的 7 层计算 |
+| 信道增益 $g(t\|x)$ | $l_L(t) - l_{\ell^*}(t)$，总是正的，依赖 $(t, x)$ |
+| 信号分量 | $g_{\text{legit}}$ — 正当计算精化 |
+| 噪声分量 | $g_{\text{override}}$ — 覆盖偏置 |
+| 均衡策略 | 迫零 (ZF): $l_L(t) - \beta \cdot \hat{g}(t)$ |
+| 均衡系数 β | 率失真权衡参数 — β 大 = 激进去覆盖，β 小 = 保守保真 |
+| 信道条件性 | $g(t\|x) = f(x)$ — 解释为什么固定方向的 v-based 方法失败 |
+| 信息访问约束 | $I(X; \hat{Y}) \leq I(X; H_{\ell^*})$ — TLDC 仅能使用 L20 已有的信息，但可通过更好的分类函数（插值）超越 L20 早退准确率 |
+| v-based = 固定译码器 | $\mathbb{E}_x[g(t\|x)]$ — 丢失条件信息，误差方差大 |
+
+**底层洞察**：LLM 的幻觉不是"信息丢失"问题（rank 信息在 L20→L27 中无损传输），而是**信道失真**问题——后期层对 logit 的非均匀放大使 distractor 在 argmax 上胜出。TLDC 作为条件迫零均衡器，部分逆转了这种失真。由于信号和噪声在信道中纠缠，任何均衡器都面临率失真权衡——这既是 TLDC 有效的原因，也是其效应微弱的根本限制。
+
 ---
 
 ### 14.3 方向 2: 知识覆盖电路与反覆盖干预
