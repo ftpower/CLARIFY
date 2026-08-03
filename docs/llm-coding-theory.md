@@ -480,3 +480,220 @@ for t = 1, 2, ..., T:
 ---
 
 *本文档独立于项目实验结论，从通信编码理论的第一性原理推导而来。与项目实验的关系参见 `theory-intervention-failure.md` 第 14-15 节。*
+*2026-08-03 新增 §10-§12：Phase 17 全部 gate 失败后，跳出 TLDC 事后修正框架的三个新方向。*
+
+---
+
+## 10. 脏纸编码：事前预消除 (Dirty Paper Coding Pre-Cancellation)
+
+### 10.1 动机：所有事后修正均失败的根因
+
+Phase 17 尝试的全部方法（SIC、HARQ、L1 稀疏、信道探测、自适应 β、Turbo）共享一个设计模式：
+
+```
+l_final ──→ 检测偏置 δ ──→ 在 l_final 上做修正 ──→ l_corrected
+   (L27)       (事后)            (事后)              (事后)
+```
+
+所有操作都在信道输出端（L27）进行。根因是 §4.2 的不可分离性——$\delta = \delta_{\text{legit}} + \delta_{\text{override}}$ 无法在 L27 分离。任何事后修正都在同时削去信号和噪声。
+
+**脏纸编码 (Dirty Paper Coding, DPC)** 提供了相反的策略：在信道**输入端**做预编码，使经过信道后恰好消除干扰。
+
+### 10.2 通信原型
+
+Costa (1983) "Writing on Dirty Paper"：若发送端已知叠加在信道上的干扰 $s$（非因果），存在预编码方案使信道容量与无干扰时相同：
+
+$$Y = X + S + Z$$
+
+其中 $S$ 是发送端已知的干扰，$Z$ 是未知噪声。通过选择 $X = f(U, S)$（U 是原始消息），接收端可无失真恢复 $U$。
+
+**核心条件**：发送端必须在干扰 $S$ 施加到信号**之前**知道 $S$。
+
+### 10.3 LLM 映射
+
+**发送端** = 早期层 L15-L18（在 override 完全形成之前）
+**干扰** = override 偏置 $\delta(x) = l_{\ell^*}(x) - l_L(x)$（L20→L27 的净偏移）
+**接收端** = L27 输出 logits
+**预编码器** = 从 L18 的 logits 预测最终 $\delta(x)$ 的轻量模型
+
+**与 TLDC 的本质区别**：
+
+| | TLDC | DPC 预消除 |
+|---|---|---|
+| 操作位置 | L27（信道输出） | L18（信道输入） |
+| 操作方式 | 事后插值 $l_L + \beta(l_{\ell^*} - l_L)$ | 事前减去预测偏置 $l_{\ell} - \beta\hat{\delta}$ |
+| 依赖信号 | $\delta$ 的真实值（含噪声+信号） | $\hat{\delta}$ 的预测值（仅去除可预测部分） |
+| 对 KC 的误伤 | $\beta$ 过高时退化 L27 的正确输出 | 不影响 L27，只改 early-exit logits |
+
+### 10.4 形式化
+
+**定义 10（DPC 预消除译码器）.** 令 $\hat{\delta}_\phi(l_\ell)$ 为参数 $\phi$ 的预测器，从层 $\ell$ 的 logits 预测 L20→L27 的 override 偏置 $\delta(x)$。DPC 译码器定义为：
+
+$$l_{\text{dpc}} = l_{\ell} - \beta \cdot \hat{\delta}_\phi(l_\ell)$$
+
+其中 $l_\ell$ 是层 $\ell \in [15, 19]$ 的 early-exit logits，$\beta \in [0, 1]$ 是预消除强度。
+
+**预测器设计**：
+1. 输入：$l_\ell \in \mathbb{R}^{|\mathcal{V}|}$（层 ℓ 的 logits）
+2. 输出：$\hat{\delta} \in \mathbb{R}^{|\mathcal{V}|}$（预测的 override 偏置）
+3. 架构：线性投影 $l_\ell W + b$（500K 参数）+ 可选 MLP
+4. 训练目标：$\min_\phi \mathbb{E}_{x}[\|\hat{\delta}_\phi(l_\ell(x)) - \delta(x)\|^2]$
+
+**关键约束**：预测器 $\hat{\delta}_\phi$ 在**校准集**上训练（已知 KW/KC 标签，离线），推理时不需标签。
+
+### 10.5 理论假说与可检验预测
+
+**H19（δ 可预测性假说）**: override 偏置 $\delta(x)$ 至少部分可从 L18 的 logits 预测。即 $\min_\phi \mathbb{E}[\|\hat{\delta}_\phi - \delta\|^2] < \mathbb{E}[\|\delta - \bar{\delta}\|^2]$。
+
+**可检验预测**:
+
+| # | 预测 | 检验方法 | Gate |
+|---|------|---------|------|
+| P10 | 预测 $\hat{\delta}$ 的 top-5 受影响 token 与真实 $δ$ 的 top-5 重叠 > 50% | 校准集上训练线性/MLP 预测器，test set 上测重叠率 | $R^2 > 0.1$ |
+| P11 | DPC 预消除 KW Δ > TLDC 事后修正 KW Δ | full-gen comparison | DPC KW Δ > TLDC KW Δ |
+| P12 | DPC 预消除 KC Δ ≥ 0%（不破坏正确样本） | full-gen comparison on KC | KC Δ ≥ 0% |
+
+### 10.6 失败模式预判
+
+- **P10 失败**：$R^2 \approx 0$，说明 δ 在 L18 完全不可预测，override 是 L20-L27 的 emergent 现象。此时 DPC 退化为 $l_\ell$（纯 early-exit），效果 ≤ L20-only baseline（已知极差）→ 放弃。
+- **P10 通过但 P11 失败**：δ 可预测但预消除不会翻转 argmax → override 的预测部分太小，不足 argmax 翻转阈值。
+- **训练过拟合**：校准集 200 样本，线性预测器 150K×150K = 22.5B 参数（太大）→ 需要降维：先 PCA 到 256 维，在低维预测，再升维。
+- **层选择敏感**：DPC 效果可能强烈依赖 $\ell$ 的选择（L15 vs L18 vs L20）。
+
+### 10.7 与已有实验的关系
+
+- 不同于 TLDC（事后插值）：TLDC 直接使用真实 δ，DPC 使用预测的 $\hat{\delta}$ 在信道前干预
+- 不同于 Phase 13 Learned δ(x)（退化为全局方向）：Phase 13 学习的是隐藏空间的全向量修正，DPC 学习的是 logit 空间的偏置预测——输入和输出都在 logit 空间（150K 维），信息瓶颈更宽
+- 不同于 SIC（贪心事后消除）：SIC 在 L27 基于真实 δ 的排名消除，DPC 在 L18 基于预测 $\hat{\delta}$ 的一次性消除
+
+---
+
+## 11. OFDM 子带分解：语义聚类 β
+
+### 11.1 动机：统一 β 的不合理性
+
+TLDC 对所有 150K token 使用相同的 β：
+
+$$l_{\text{combined}}[t] = l_L[t] + \beta \cdot (l_{\ell^*}[t] - l_L[t]), \quad \forall t \in \mathcal{V}$$
+
+但 override 偏置在不同类型的 token 上可能不同。结构词（"the", "a"）的 logit 放大可能纯粹是语法计算，而专有名词的放大可能包含 override。统一惩罚不合理。
+
+### 11.2 通信原型
+
+OFDM 将宽带频率选择性信道分解为多个并行的平坦衰落子载波：
+
+$$Y_k = H_k X_k + Z_k$$
+
+每个子载波 $k$ 经历独立的信道增益 $H_k$，可独立均衡（$\hat{X}_k = Y_k / \hat{H}_k$）。
+
+### 11.3 LLM 映射
+
+**"子载波"** = 语义或频率聚类的 token 组 $\mathcal{C}_1, \ldots, \mathcal{C}_M$
+**"独立均衡"** = 每组 $c$ 使用独立的 $\beta_c$
+
+$$l_{\text{ofdm}}[t] = l_L[t] + \beta_{c(t)} \cdot (l_{\ell^*}[t] - l_L[t]), \quad t \in \mathcal{C}_{c(t)}$$
+
+### 11.4 聚类设计
+
+**方案 A（频率 bin）**: 按 token 在训练语料中的频率分组
+- $\mathcal{C}_1$: top-100 token
+- $\mathcal{C}_2$: rank 100-1K
+- $\mathcal{C}_3$: rank 1K-10K
+- $\mathcal{C}_4$: rank 10K+
+
+**方案 B（POS/语义）**: 按 token 的语义角色分组（专有名词、数字、日期、普通词、标点）
+
+**方案 C（δ 驱动）**: 按 $\bar{g}(t) = \mathbb{E}_x[|g(t|x)|]$ 分组——本身被放大较多的 token 天然需要更强的 β
+
+### 11.5 理论假说与可检验预测
+
+**H20（OFDM 分化假说）**: override 偏置 $\bar{g}(t)$ 在不同 token 聚类间有显著差异，使得最优 $\beta_c$ 在不同聚类间不同。
+
+**可检验预测**:
+
+| # | 预测 | 检验方法 | Gate |
+|---|------|---------|------|
+| P13 | 存在聚类 $c_1, c_2$ 使得 $\bar{g}_{c_1} / \bar{g}_{c_2} > 1.5$ | 校准集上按频率 bin 计算聚类平均 $\bar{g}$ | ratio > 1.5 |
+| P14 | 逐聚类 β 的 KW Δ > 统一 β 的 KW Δ | 每个聚类独立 sweep β，full-gen 对比 | OFDM KW Δ > TLDC KW Δ |
+| P15 | OFDM 的 KC Δ ≥ 统一 β TDLC 的 KC Δ | full-gen comparison | KC Δ ≥ TLDC KC Δ |
+
+### 11.6 失败模式预判
+
+- **P13 失败**：所有聚类的 $\bar{g}$ 差异 < 20%。说明 override 在各个语义类别上均匀 → 放弃 OFDM。
+- **参数爆炸**：M 个聚类 × β sweep → 可能导致过拟合校准集 → 限制 M ≤ 4。
+- **聚类边界误差**：token 被错误分配到聚类 → 使用不合适的 β → 如频率 bin 方案（方案 A）最鲁棒。
+
+---
+
+## 12. 无速率自适应译码：按需使用参考层
+
+### 12.1 动机：固定 K 的不合理性
+
+EGC/MRC 对所有样本使用固定 K 层。但：
+- 简单样本（KC）：本身不需要干预 → K=0 即可
+- 困难样本（KW）：可能需要更多分集支路 → K 应更大
+
+### 12.2 通信原型
+
+**无速率码 (Rateless/Fountain Codes)** 中，发送端持续生成编码包，接收端在收到"足够多"的包后停止接收并译码，不需要预先知道码率。
+
+### 12.3 LLM 映射
+
+从最可靠参考层开始，逐层加入分集支路：
+
+```
+l^(0) = l_L
+for k = 1, 2, ..., K_max:
+    l^(k) = l^(k-1) + β_k · (y_{ℓ_k} - l_L)
+    if argmax(l^(k)) ≠ argmax(l^(k-1)):  # argmax 改变了
+        return l^(k)
+return l^(K_max)
+```
+
+**与 EGC/MRC 的本质区别**：
+- EGC/MRC：固定 K，一次性合并 → 简单样本被过度干预
+- 无速率：自适应 K(x)，逐层加、按需停 → 简单样本用 1 层，困难样本用更多
+
+### 12.4 理论假说与可检验预测
+
+**H21（无速率分化假说）**: KW 样本比 KC 样本需要更多参考层才能翻转 argmax。
+
+**可检验预测**:
+
+| # | 预测 | 检验方法 | Gate |
+|---|------|---------|------|
+| P16 | KW 样本平均所需层数 > KC 样本 | 校准集上统计 argmax 翻转所需层数 | KW mean > KC mean |
+| P17 | 无速率译码的 All accuracy > 固定 K 层 MRC | full-gen comparison | Rateless All Δ > MRC All Δ |
+
+### 12.5 失败模式预判
+
+- **P16 失败**：非 KW 样本反而需要更多层 → 放弃（说明层选择逻辑与 override 无关）。
+- **早停过敏感**：argmax 在相邻层间频繁振荡 → 需要 hysteresis（连续 2 层同向才停止）。
+- **与 Phase 17.3a 的关系**：若多参考层诊断（18.1b 计划）显示层间 δ 高度相关（corr > 0.9），则无速率译码不会比单层 TLDC 更好——没有足够独立的"新信息"可供加入。
+
+---
+
+## 13. 三个方向的依赖关系与执行顺序
+
+```
+Phase A: 共享诊断（可并行）
+  ├── DPC 诊断 (P10): δ 可预测性 — 需训练预测器，~1h
+  ├── OFDM 诊断 (P13): 聚类 ḡ 分化 — 纯统计，~15min
+  └── 无速率诊断 (P16): 逐层 argmax 翻转 — 复用已有数据，~10min
+
+Phase B: 干预实验（根据诊断结果串行）
+  ├── 若 P13 ✅ → OFDM 干预 (P14, P15) — ~30min
+  ├── 若 P16 ✅ → 无速率干预 (P17) — ~20min
+  └── 若 P10 ✅ → DPC 干预 (P11, P12) — ~45min（最低优先级，需要训练）
+```
+
+### Gate 汇总
+
+| # | Gate | 不通过 → |
+|---|------|---------|
+| P10 | $R^2(\hat{\delta}, \delta) > 0.1$ | 放弃 DPC，override 不可预测 |
+| P13 | $\max \bar{g}_{c} / \min \bar{g}_{c} > 1.5$ | 放弃 OFDM，override 跨类别均匀 |
+| P16 | KW avg layers > KC avg layers | 放弃无速率，层选择与 override 无关 |
+| P11 | DPC KW Δ > TLDC KW Δ | DPC 理论正确但幅度不足 |
+| P14 | OFDM KW Δ > TLDC KW Δ | OFDM 理论正确但幅度不足 |
+| P17 | Rateless All Δ > MRC All Δ | 无速率理论正确但幅度不足 |
