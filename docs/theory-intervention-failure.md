@@ -410,19 +410,28 @@ Phase 17 尝试了多种改良 TLDC 的方法，全部失败。失败的底层�
 
 ## 7. 展望：跳出事后修正框架
 
-Phase 17 确认了事后修正的天花板。后续方向分为两路：
+Phase 17 确认了事后修正的天花板。后续方向分为三路：
 
-**Phase 18: TLDC 框架内改良**（低风险）
-- v·h 门控 TLDC: 用已证明有效的检测信号（readout）决定是否应用 TLDC
-- 多参考层 TLDC: 组合多个 $\ell$ 的 $\delta$ 利用互补信息
-- 无上下文对比: 用 question-only logits 替代 L20 作为参考
+**Phase 18: TLDC 框架内改良**（已执行，全部实质失败）
+- v·h 门控 TLDC ❌: 检测信号无法识别 TLDC-amenable 样本
+- 多参考层 TLDC ⚠️: AUROC +6.2% 但 first-token 零效应
+- 无上下文对比 ❌: context 是帮手非干扰
 
-**Phase 19: 跳出 TLDC 框架**（高创新）
-- DPC 预消除: 在 L18 预测并预消除 override（信道**输入端**干预，非输出端）
-- OFDM 子带分解: 按 token 频率/语义聚类独立 $\beta_c$
-- 无速率自适应: 按需使用参考层，样本自适应层数
+**Phase 19: 跳出 TLDC 框架**（已执行，全部实质失败）
+- DPC 预消除 ❌: δ 不可从 L18 预测（PCA-space R²=0.05, per-sample R²=-0.42）
+- OFDM 子带分解 ⚠️: 频率分箱 ratio=1.03，δ 驱动分箱 ratio=1.82 但准循环论证
+- 无速率自适应 ❌: argmax 很少 flip，flip 后从不指向正确答案
 
-详见 `docs/llm-coding-theory.md` §10-§12 和各 plan 文件。
+**Phase 20: 训练时干预**（当前）
+- LoRA δ-corrective: 修改 L20-L27 Q/V 投影，减小 distractor 的 δ 放大
+- DPO token-preference: y_true vs argmax 作为 first-token 偏好对
+- Adapter bottleneck: 在 L20 插入旁路，绕过 L21-L27 覆盖计算
+
+推理时干预（Phase 7-19）和训练时干预（Phase 20+）的区分：
+- 推理时：不修改 θ，操作 h 或 logits → 受定理 1（固定方向零容量）和定理 2（信息论上界）约束
+- 训练时：修改 θ → 改变信道 C_θ 本身 → 不受推理时上界约束
+
+详见 `docs/llm-coding-theory.md` §10-§12、各 plan 文件和 `phase20-training-intervention.md`。
 
 ---
 
