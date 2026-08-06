@@ -731,22 +731,22 @@ def evaluate(args):
 
     # Per-sample records
     for i in range(n):
-        results["per_sample"].append(
-            {
-                "question": bl_results[i]["question"],
-                "category": bl_results[i]["category"],
-                "baseline": {
-                    "ft_correct": bl_results[i]["ft_correct"],
-                    "em_correct": bl_results[i]["em_correct"],
-                    "full_text": bl_results[i]["full_text"],
-                },
-                "lora": {
-                    "ft_correct": lora_results[i]["ft_correct"],
-                    "em_correct": lora_results[i]["em_correct"],
-                    "full_text": lora_results[i]["full_text"],
-                },
+        sample = {
+            "question": bl_results[i]["question"],
+            "category": bl_results[i]["category"],
+            "baseline": {
+                "ft_correct": bl_results[i]["ft_correct"],
+                "em_correct": bl_results[i]["em_correct"],
+                "full_text": bl_results[i]["full_text"],
+            },
+        }
+        if has_lora:
+            sample["lora"] = {
+                "ft_correct": lora_results[i]["ft_correct"],
+                "em_correct": lora_results[i]["em_correct"],
+                "full_text": lora_results[i]["full_text"],
             }
-        )
+        results["per_sample"].append(sample)
 
     # Print
     print(f"\n{'=' * 60}")
