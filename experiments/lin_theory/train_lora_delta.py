@@ -669,12 +669,13 @@ def evaluate(args):
         cat = bl_results[i]["category"]
         if bl_results[i]["em_correct"]:
             cat_stats[cat]["bl_em"] += 1
-        if lora_results[i]["em_correct"]:
-            cat_stats[cat]["lo_em"] += 1
         if bl_results[i]["ft_correct"]:
             cat_stats[cat]["bl_ft"] += 1
-        if lora_results[i]["ft_correct"]:
-            cat_stats[cat]["lo_ft"] += 1
+        if has_lora:
+            if lora_results[i]["em_correct"]:
+                cat_stats[cat]["lo_em"] += 1
+            if lora_results[i]["ft_correct"]:
+                cat_stats[cat]["lo_ft"] += 1
 
     kw_n = cat_stats["KW"]["n"]
     kc_n = cat_stats["KC"]["n"]
