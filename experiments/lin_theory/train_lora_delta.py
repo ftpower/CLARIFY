@@ -604,47 +604,50 @@ def evaluate(args):
     torch.cuda.empty_cache()
 
     # ── 3. Evaluate LoRA model ─────────────────────────────────────────────
-    print("\n[2/3] Evaluating LoRA model...")
-    if not lora_dir.exists():
-        print(f"  ERROR: LoRA adapter not found at {lora_dir}")
-        print(f"  Run 'python train_lora_delta.py --mode train' first.")
-        return
-
-    base = AutoModelForCausalLM.from_pretrained(
-        MODEL_PATH, **hf_kwargs, torch_dtype=torch.float16
-    ).to(device)
-    lora_model = PeftModel.from_pretrained(base, str(lora_dir))
-    lora_model.eval()
-
     lora_results = []
-    for s in tqdm(test_samples, desc="  LoRA"):
-        prompt = format_prompt(s["question"], s.get("context", ""), dataset="triviaqa")
-        full_text, ft_id, logits = generate_with_model(
-            lora_model, tokenizer, prompt, device
-        )
-        y_true_id = get_first_answer_token_id(tokenizer, s["answers"])
-        ft_correct = y_true_id is not None and ft_id == y_true_id
-        em_correct = check_correct(full_text, s["answers"], dataset="triviaqa")
-        category = classify_sample(logits, y_true_id, full_text, s["answers"])
-        lora_results.append(
-            {
-                "question": s["question"],
-                "answers": s["answers"],
-                "y_true_id": y_true_id,
-                "ft_id": ft_id,
-                "ft_correct": ft_correct,
-                "em_correct": em_correct,
-                "full_text": full_text,
-                "category": category,
-            }
-        )
+    if getattr(args, "skip_lora", False):
+        print("\n[2/3] Skipping LoRA evaluation (--skip_lora)")
+    elif not lora_dir.exists():
+        print(f"  WARNING: LoRA adapter not found at {lora_dir}, baseline-only")
+    else:
+        print("\n[2/3] Evaluating LoRA model...")
+        base = AutoModelForCausalLM.from_pretrained(
+            MODEL_PATH, **hf_kwargs, torch_dtype=torch.float16
+        ).to(device)
+        lora_model = PeftModel.from_pretrained(base, str(lora_dir))
+        lora_model.eval()
 
-    del base, lora_model
-    gc.collect()
-    torch.cuda.empty_cache()
+        for s in tqdm(test_samples, desc="  LoRA"):
+            prompt = format_prompt(
+                s["question"], s.get("context", ""), dataset="triviaqa"
+            )
+            full_text, ft_id, logits = generate_with_model(
+                lora_model, tokenizer, prompt, device
+            )
+            y_true_id = get_first_answer_token_id(tokenizer, s["answers"])
+            ft_correct = y_true_id is not None and ft_id == y_true_id
+            em_correct = check_correct(full_text, s["answers"], dataset="triviaqa")
+            category = classify_sample(logits, y_true_id, full_text, s["answers"])
+            lora_results.append(
+                {
+                    "question": s["question"],
+                    "answers": s["answers"],
+                    "y_true_id": y_true_id,
+                    "ft_id": ft_id,
+                    "ft_correct": ft_correct,
+                    "em_correct": em_correct,
+                    "full_text": full_text,
+                    "category": category,
+                }
+            )
+
+        del base, lora_model
+        gc.collect()
+        torch.cuda.empty_cache()
 
     # ── Summary & Gates ────────────────────────────────────────────────────
-    print(f"\n[3/3] Computing summary...")
+    has_lora = len(lora_results) > 0
+    print(f"\n[{'3/3' if has_lora else '2/2'}] Computing summary...")
     n = len(test_samples)
     bl_em = sum(1 for r in bl_results if r["em_correct"])
     lo_em = sum(1 for r in lora_results if r["em_correct"])
@@ -746,29 +749,37 @@ def evaluate(args):
 
     # Print
     print(f"\n{'=' * 60}")
-    print(f"RESULTS")
+    print(f"RESULTS{' (baseline-only)' if not has_lora else ''}")
     print(f"{'=' * 60}")
     print(f"  N = {n} | KC={kc_n} KW={kw_n} DK={cat_stats['DK']['n']}")
     print(f"\n  Exact-match accuracy:")
     print(f"    Baseline: {bl_em}/{n} = {bl_em / n:.1%}")
-    print(f"    LoRA:     {lo_em}/{n} = {lo_em / n:.1%}")
-    print(f"    Delta:    {(lo_em - bl_em) / n:+.1%}")
+    if has_lora:
+        print(f"    LoRA:     {lo_em}/{n} = {lo_em / n:.1%}")
+        print(f"    Delta:    {(lo_em - bl_em) / n:+.1%}")
     print(f"\n  First-token accuracy:")
     print(f"    Baseline: {bl_ft}/{n} = {bl_ft / n:.1%}")
-    print(f"    LoRA:     {lo_ft}/{n} = {lo_ft / n:.1%}")
-    print(f"    Delta:    {(lo_ft - bl_ft) / n:+.1%}")
+    if has_lora:
+        print(f"    LoRA:     {lo_ft}/{n} = {lo_ft / n:.1%}")
+        print(f"    Delta:    {(lo_ft - bl_ft) / n:+.1%}")
     print(f"\n  Per-category EM:")
     for cat in categories:
         cs = cat_stats[cat]
         bl_a = cs["bl_em"] / max(cs["n"], 1)
-        lo_a = cs["lo_em"] / max(cs["n"], 1)
-        print(
-            f"    {cat} (n={cs['n']}): baseline={bl_a:.1%} lora={lo_a:.1%} delta={lo_a - bl_a:+.1%}"
-        )
-    print(f"\n  Gates:")
-    for gname, ginfo in results["summary"]["gates"].items():
-        status = "✅ PASS" if ginfo["pass"] else "❌ FAIL"
-        print(f"    {gname}: {status} — {ginfo['description']}")
+        if has_lora:
+            lo_a = cs["lo_em"] / max(cs["n"], 1)
+            print(
+                f"    {cat} (n={cs['n']}): baseline={bl_a:.1%} lora={lo_a:.1%} delta={lo_a - bl_a:+.1%}"
+            )
+        else:
+            print(f"    {cat} (n={cs['n']}): baseline={bl_a:.1%}")
+    if has_lora:
+        print(f"\n  Gates:")
+        for gname, ginfo in results["summary"]["gates"].items():
+            status = "✅ PASS" if ginfo["pass"] else "❌ FAIL"
+            print(f"    {gname}: {status} — {ginfo['description']}")
+    else:
+        print(f"\n  Gates: (run training first)")
     print(f"{'=' * 60}")
 
     with open(results_path, "w") as f:
@@ -818,6 +829,11 @@ def main():
         type=str,
         default=None,
         help="Explicit path to LoRA adapter directory for eval (overrides --lambda_delta)",
+    )
+    parser.add_argument(
+        "--skip_lora",
+        action="store_true",
+        help="Evaluate baseline only, skip LoRA model loading",
     )
     # Shared
     parser.add_argument("--seed", type=int, default=42)
