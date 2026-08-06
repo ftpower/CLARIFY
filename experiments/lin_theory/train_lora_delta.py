@@ -62,8 +62,17 @@ LAYER_EARLY = 20  # h_L20 extraction
 LAYER_LATE = 27  # h_L27 = final layer
 RANK_THRESHOLD = 50
 OUTPUT_DIR = Path(__file__).parent.parent / "outputs" / "lin_theory"
-LORA_DIR = OUTPUT_DIR / "s20_1_lora_delta"
-RESULTS_PATH = OUTPUT_DIR / "s20_1_lora_delta.json"
+
+
+def _get_lora_dir(lambda_delta: float) -> Path:
+    """Lambda-specific LoRA checkpoint directory."""
+    return OUTPUT_DIR / f"s20_1_lambda{lambda_delta}"
+
+
+def _get_results_path(lambda_delta: float) -> Path:
+    """Lambda-specific results JSON path."""
+    return OUTPUT_DIR / f"s20_1_lambda{lambda_delta}.json"
+
 
 # Qwen3-1.7B model path (auto-detected or use cache)
 MODEL_ID = "Qwen/Qwen3-1.7B"
@@ -195,8 +204,12 @@ def collate_lora_batch(batch: list[dict], tokenizer) -> dict:
 def train_lora_delta(args):
     """Main training routine: LoRA δ-corrective fine-tuning."""
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    lora_dir = _get_lora_dir(args.lambda_delta)
+    results_path = _get_results_path(args.lambda_delta)
     OUTPUT_DIR.mkdir(exist_ok=True, parents=True)
-    print(f"Phase 20.1: LoRA δ-Corrective Training | n_train={args.n_train}")
+    print(
+        f"Phase 20.1: LoRA δ-Corrective Training | n_train={args.n_train} | λ={args.lambda_delta}"
+    )
 
     # ── 1. Load tokenizer + base model ────────────────────────────────────
     print("\n[1/6] Loading model...")
@@ -365,6 +378,10 @@ def train_lora_delta(args):
 
                 # δ penalty: max(0, g(d) - g(t*) + m)
                 penalty = F.relu(g_d - g_tstar + args.margin)
+                # KC-like samples: y_true already = argmax → skip δ penalty
+                if args.kc_ce_only:
+                    kc_mask = (y_true_ids == d_ids).float()  # 1=KC, 0=KW-like
+                    penalty = penalty * (1 - kc_mask)
                 delta_loss = penalty.mean()
 
             loss = ce_loss + args.lambda_delta * delta_loss
@@ -410,10 +427,12 @@ def train_lora_delta(args):
             f"    Epoch {epoch + 1}: ce={avg_ce:.4f} delta={avg_delta:.4f} total={avg_loss:.4f}"
         )
 
+        # Save per-epoch checkpoint (for early stopping analysis)
+        ep_dir = lora_dir / f"epoch_{epoch + 1}"
+        model.save_pretrained(str(ep_dir))
+        print(f"    -> Saved LoRA adapter to {ep_dir}")
         if avg_loss < best_loss:
             best_loss = avg_loss
-            model.save_pretrained(str(LORA_DIR))
-            print(f"    -> Saved LoRA adapter to {LORA_DIR}")
 
     # ── 6. Cleanup & save metadata ────────────────────────────────────────
     h_L20_handle.remove()
@@ -439,9 +458,9 @@ def train_lora_delta(args):
         "best_loss": best_loss,
         "n_trainable_params": n_trainable,
     }
-    with open(RESULTS_PATH, "w") as f:
+    with open(results_path, "w") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
-    print(f"  Saved to {RESULTS_PATH}")
+    print(f"  Saved to {results_path}")
 
     del model
     gc.collect()
@@ -502,7 +521,15 @@ def generate_with_model(
 def evaluate(args):
     """Evaluate LoRA model vs baseline on test set."""
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    print(f"Phase 20.1: LoRA δ-Corrective Evaluation | n_test={args.n_test}")
+    lora_dir = (
+        Path(args.lora_checkpoint)
+        if getattr(args, "lora_checkpoint", None)
+        else _get_lora_dir(getattr(args, "lambda_delta", 0.1))
+    )
+    results_path = _get_results_path(getattr(args, "lambda_delta", 0.1))
+    print(
+        f"Phase 20.1: LoRA δ-Corrective Evaluation | n_test={args.n_test} | λ={getattr(args, 'lambda_delta', 0.1)}"
+    )
 
     # ── 1. Load tokenizer ─────────────────────────────────────────────────
     from transformers import AutoTokenizer, AutoModelForCausalLM
@@ -552,15 +579,15 @@ def evaluate(args):
 
     # ── 3. Evaluate LoRA model ─────────────────────────────────────────────
     print("\n[2/3] Evaluating LoRA model...")
-    if not LORA_DIR.exists():
-        print(f"  ERROR: LoRA adapter not found at {LORA_DIR}")
+    if not lora_dir.exists():
+        print(f"  ERROR: LoRA adapter not found at {lora_dir}")
         print(f"  Run 'python train_lora_delta.py --mode train' first.")
         return
 
     base = AutoModelForCausalLM.from_pretrained(
         MODEL_PATH, **hf_kwargs, torch_dtype=torch.float16
     ).to(device)
-    lora_model = PeftModel.from_pretrained(base, str(LORA_DIR))
+    lora_model = PeftModel.from_pretrained(base, str(lora_dir))
     lora_model.eval()
 
     lora_results = []
@@ -718,7 +745,7 @@ def evaluate(args):
         print(f"    {gname}: {status} — {ginfo['description']}")
     print(f"{'=' * 60}")
 
-    with open(RESULTS_PATH, "w") as f:
+    with open(results_path, "w") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
     print(f"\n  Saved to {RESULTS_PATH}")
 
@@ -746,9 +773,26 @@ def main():
     parser.add_argument("--lora_r", type=int, default=8)
     parser.add_argument("--lora_alpha", type=int, default=16)
     parser.add_argument("--lambda_delta", type=float, default=0.1)
+    parser.add_argument(
+        "--lambda_values",
+        type=str,
+        default=None,
+        help="Comma-separated lambda values for sweep (e.g. '0.005,0.01,0.05,0.1')",
+    )
     parser.add_argument("--margin", type=float, default=1.0)
+    parser.add_argument(
+        "--kc_ce_only",
+        action="store_true",
+        help="Apply CE-only loss to KC-like samples (y_true == argmax)",
+    )
     # Eval
     parser.add_argument("--n_test", type=int, default=100)
+    parser.add_argument(
+        "--lora_checkpoint",
+        type=str,
+        default=None,
+        help="Explicit path to LoRA adapter directory for eval (overrides --lambda_delta)",
+    )
     # Shared
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
@@ -768,7 +812,66 @@ def main():
     np.random.seed(args.seed)
 
     if args.mode == "train":
-        train_lora_delta(args)
+        if args.lambda_values:
+            # Lambda sweep: train + eval for each λ
+            lambdas = [float(x.strip()) for x in args.lambda_values.split(",")]
+            print(f"λ sweep: {lambdas}")
+            all_results = {}
+            for lam in lambdas:
+                print(f"\n{'=' * 60}")
+                print(f"  λ = {lam}")
+                print(f"{'=' * 60}")
+                args.lambda_delta = lam
+                train_lora_delta(args)
+
+                # Evaluate all epochs, pick best
+                lora_dir = _get_lora_dir(lam)
+                best_epoch = None
+                best_kw_delta = -1
+                for ep in range(1, args.epochs + 1):
+                    ep_dir = lora_dir / f"epoch_{ep}"
+                    if not ep_dir.exists():
+                        continue
+                    args.lora_checkpoint = str(ep_dir)
+                    args.lambda_delta = lam
+                    print(f"\n  --- Eval epoch {ep} ---")
+                    evaluate(args)
+                    # Read results to check KW delta
+                    rp = _get_results_path(lam)
+                    if rp.exists():
+                        with open(rp) as f:
+                            res = json.load(f)
+                        kw_delta = res["summary"]["gates"]["P20.1.2"]["delta"]
+                        kc_deg = res["summary"]["gates"]["P20.1.3"]["degradation"]
+                        print(f"  λ={lam} ep={ep}: KW_Δ={kw_delta} KC_deg={kc_deg}")
+                        all_results[f"λ={lam}_ep={ep}"] = {
+                            "kw_delta": kw_delta,
+                            "kc_degradation": kc_deg,
+                            "em_delta": res["summary"]["em_delta"],
+                        }
+                        if kw_delta > best_kw_delta:
+                            best_kw_delta = kw_delta
+                            best_epoch = ep
+                if best_epoch:
+                    print(f"\n  Best: λ={lam} epoch={best_epoch} KW_Δ={best_kw_delta}")
+
+            # Summary
+            print(f"\n{'=' * 60}")
+            print("SWEEP SUMMARY")
+            print(f"{'=' * 60}")
+            for k, v in sorted(all_results.items()):
+                kw_mark = "✅" if v["kw_delta"] > 0 else "❌"
+                kc_mark = "✅" if v["kc_degradation"] <= 1 else "❌"
+                print(
+                    f"  {k}: KW_Δ={v['kw_delta']} {kw_mark} | KC_deg={v['kc_degradation']} {kc_mark} | EM_Δ={v['em_delta']:+.1%}"
+                )
+            # Save sweep summary
+            sweep_path = OUTPUT_DIR / "s20_1_sweep_summary.json"
+            with open(sweep_path, "w") as f:
+                json.dump(all_results, f, indent=2)
+            print(f"\nSaved: {sweep_path}")
+        else:
+            train_lora_delta(args)
     elif args.mode == "eval":
         evaluate(args)
 
