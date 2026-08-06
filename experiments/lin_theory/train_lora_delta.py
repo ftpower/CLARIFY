@@ -747,7 +747,7 @@ def evaluate(args):
 
     with open(results_path, "w") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
-    print(f"\n  Saved to {RESULTS_PATH}")
+    print(f"\n  Saved to {results_path}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
