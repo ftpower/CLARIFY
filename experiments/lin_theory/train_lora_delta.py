@@ -1,19 +1,22 @@
-"""Phase 20.1: LoRA δ-Corrective Fine-tuning — reduce L20→L27 distractor amplification.
+"""Phase 20.1: LoRA δ-Corrective Fine-tuning — reduce late-layer distractor amplification.
 
 Theory: docs/theory-intervention-failure.md
 Plan:   ~/.claude/plans/CLARIFY/phase20-training-intervention.md §20.1
 
 Core idea:
-  TLDC shows that L27 over-amplifies distractor tokens relative to L20.
-  Instead of post-hoc logit adjustment (TLDC), use LoRA to modify L20-L27
-  Q/V projections so the model doesn't over-amplify distractors in the first place.
+  TLDC shows that the final layer over-amplifies distractor tokens relative to
+  an earlier reference layer. Instead of post-hoc logit adjustment (TLDC), use
+  LoRA to modify the last N layers' Q/V projections so the model doesn't
+  over-amplify distractors in the first place.
 
-  Channel gain: g(t|x) = y_L27(t) - y_L20(t)
-  distractor d = argmax(y_L27)
+  The reference layer is automatically set to the first of the last 8 layers
+  (e.g., L20 for 28-layer 1.7B, L28 for 36-layer 8B). Channel gain:
+    g(t|x) = y_last(t) - y_ref(t)
+    distractor d = argmax(y_last)
 
   Loss = CE(y_true) + λ·max(0, g(d) - g(y_true) + m)
 
-  LoRA: r=8, α=16, target=["q_proj","v_proj"], layers 20-27
+  LoRA: r=8, α=16, target=["q_proj","v_proj"], last 8 layers
 
 Gates (see plan §20.1.6):
   P20.1.1: g(d) - g(t*) median decreases > 20%
@@ -21,8 +24,13 @@ Gates (see plan §20.1.6):
   P20.1.3: KC exact match degradation ≤ 1 sample
 
 Usage:
+  # 1.7B (auto-detects L20-L27)
   python train_lora_delta.py --mode train --n_train 200 --n_test 100
-  python train_lora_delta.py --mode eval
+
+  # 8B (auto-detects L28-L35)
+  python train_lora_delta.py --mode train --model_path /path/to/Qwen3-8B \\
+      --n_train 200 --batch_size 1 --epochs 1 --kc_ce_only --lambda_delta 0.005
+  python train_lora_delta.py --mode eval --model_path /path/to/Qwen3-8B
 """
 
 import argparse
@@ -58,10 +66,17 @@ for _p in [
 from src.data_loader import load_triviaqa, format_prompt, check_correct
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-LAYER_EARLY = 20  # h_L20 extraction
-LAYER_LATE = 27  # h_L27 = final layer
+NUM_DELTA_LAYERS = 8  # Number of late layers to target (last N layers)
 RANK_THRESHOLD = 50
 OUTPUT_DIR = Path(__file__).parent.parent / "outputs" / "lin_theory"
+
+
+def _get_delta_layers(model) -> tuple[int, int]:
+    """Return (layer_early, layer_late) targeting the last NUM_DELTA_LAYERS layers."""
+    n_layers = model.config.num_hidden_layers
+    layer_late = n_layers - 1
+    layer_early = max(0, n_layers - NUM_DELTA_LAYERS)
+    return layer_early, layer_late
 
 
 def _get_lora_dir(lambda_delta: float) -> Path:
@@ -211,6 +226,11 @@ def train_lora_delta(args):
         f"Phase 20.1: LoRA δ-Corrective Training | n_train={args.n_train} | λ={args.lambda_delta}"
     )
 
+    # ── 0. Resolve target layers ────────────────────────────────────────────
+    # Will be set after model loading; declared here for clarity
+    layer_early = None
+    layer_late = None
+
     # ── 1. Load tokenizer + base model ────────────────────────────────────
     print("\n[1/6] Loading model...")
     t0 = time.time()
@@ -229,6 +249,12 @@ def train_lora_delta(args):
     model.eval()  # base model frozen
     for p in model.parameters():
         p.requires_grad = False
+    layer_early, layer_late = _get_delta_layers(model)
+    print(
+        f"  Model: {model.config.num_hidden_layers} layers, "
+        f"d_model={model.config.hidden_size}, "
+        f"target L{layer_early}-L{layer_late}"
+    )
     print(f"  Loaded in {time.time() - t0:.1f}s")
 
     # ── 2. Load training data ────────────────────────────────────────────
@@ -247,7 +273,7 @@ def train_lora_delta(args):
         lora_alpha=args.lora_alpha,
         lora_dropout=0.05,
         target_modules=["q_proj", "v_proj"],
-        layers_to_transform=list(range(LAYER_EARLY, LAYER_LATE + 1)),
+        layers_to_transform=list(range(layer_early, layer_late + 1)),
     )
     model = get_peft_model(model, lora_config)
     if hasattr(model, "gradient_checkpointing_enable"):
@@ -274,7 +300,7 @@ def train_lora_delta(args):
             layers = model.model.model.layers
         except AttributeError:
             layers = model.model.layers
-    h_L20_handle = layers[LAYER_EARLY].register_forward_hook(_capture_h_L20)
+    h_L20_handle = layers[layer_early].register_forward_hook(_capture_h_L20)
 
     # Get norm and lm_head for L20 logit computation
     try:
@@ -443,7 +469,7 @@ def train_lora_delta(args):
             "n_train": args.n_train,
             "n_valid": len(train_dataset),
             "seed": args.seed,
-            "layers": f"L{LAYER_EARLY}-L{LAYER_LATE}",
+            "layers": f"L{layer_early}-L{layer_late}",
             "target_modules": ["q_proj", "v_proj"],
             "lora_r": args.lora_r,
             "lora_alpha": args.lora_alpha,
