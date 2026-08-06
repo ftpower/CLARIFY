@@ -751,7 +751,17 @@ def main():
     parser.add_argument("--n_test", type=int, default=100)
     # Shared
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--model_path",
+        type=str,
+        default=None,
+        help="Model path override (e.g. /root/.../Qwen3-1.7B)",
+    )
     args = parser.parse_args()
+
+    if args.model_path:
+        global MODEL_PATH
+        MODEL_PATH = args.model_path
 
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
