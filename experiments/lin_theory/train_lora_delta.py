@@ -31,6 +31,21 @@ Usage:
   python train_lora_delta.py --mode train --model_path /path/to/Qwen3-8B \\
       --n_train 200 --batch_size 1 --epochs 1 --kc_ce_only --lambda_delta 0.005
   python train_lora_delta.py --mode eval --model_path /path/to/Qwen3-8B
+
+  # Multi-reference δ (Direction 3): L24/L26/L28/L30 weighted average
+  python train_lora_delta.py --mode train --model_path /path/to/Qwen3-8B \\
+      --n_train 200 --batch_size 1 --epochs 1 --kc_ce_only --lambda_delta 0.0025 \\
+      --multi_ref --ref_layers 24,26,28,30 --ref_weights uniform
+
+  # v·h adaptive weighting (Direction 1): continuous weight instead of binary KC mask
+  python train_lora_delta.py --mode train --model_path /path/to/Qwen3-8B \\
+      --n_train 200 --batch_size 1 --epochs 1 --vh_weight --vh_alpha 5.0 \\
+      --lambda_delta 0.0025
+
+  # Combined: multi-ref + v·h weighting
+  python train_lora_delta.py --mode train --model_path /path/to/Qwen3-8B \\
+      --n_train 200 --batch_size 1 --epochs 1 --vh_weight --vh_alpha 5.0 \\
+      --multi_ref --ref_layers 24,26,28,30 --ref_weights auroc --lambda_delta 0.0025
 """
 
 import argparse
@@ -87,6 +102,117 @@ def _get_lora_dir(lambda_delta: float) -> Path:
 def _get_results_path(lambda_delta: float) -> Path:
     """Lambda-specific results JSON path."""
     return OUTPUT_DIR / f"s20_1_lambda{lambda_delta}.json"
+
+
+def _compute_auroc(scores: np.ndarray, labels: np.ndarray) -> float:
+    """Compute AUROC via Mann-Whitney U (no sklearn dependency)."""
+    pos = scores[labels == 1]
+    neg = scores[labels == 0]
+    if len(pos) == 0 or len(neg) == 0:
+        return 0.5
+    # For each (pos, neg) pair: pos > neg → +1, pos == neg → +0.5
+    # Vectorized: sum over neg for each pos
+    n_pos, n_neg = len(pos), len(neg)
+    # Concatenate and rank
+    all_scores = np.concatenate([pos, neg])
+    ranks = np.argsort(np.argsort(all_scores)) + 1  # 1-indexed ranks
+    pos_ranks = ranks[:n_pos]
+    U = pos_ranks.sum() - n_pos * (n_pos + 1) / 2
+    return U / (n_pos * n_neg)
+
+
+def _compute_ref_layer_auroc(
+    model, tokenizer, samples, ref_layers, device
+) -> dict[int, float]:
+    """Compute per-layer AUROC for truth direction on reference layers.
+
+    Uses the same mean-diff v as C2_truth_direction.py but with HF hooks.
+    Returns {layer: auroc} dict.
+    """
+    from src.data_loader import format_prompt, check_correct
+
+    # Extract hidden states per layer
+    h_correct = {li: [] for li in ref_layers}
+    h_incorrect = {li: [] for li in ref_layers}
+
+    # Navigate to layers
+    try:
+        layers = model.base_model.model.model.layers
+    except AttributeError:
+        try:
+            layers = model.model.model.layers
+        except AttributeError:
+            layers = model.model.layers
+
+    for s in samples:
+        prompt = format_prompt(s["question"], s.get("context", ""), dataset="triviaqa")
+        tokens = tokenizer(prompt, return_tensors="pt").to(device)
+        if tokens.input_ids.shape[1] > 1024:
+            tokens.input_ids = tokens.input_ids[:, :1024]
+
+        # Register hooks for all ref layers in one forward pass
+        caches = {}
+        handles = []
+
+        def _make_hook(li):
+            def _hook(module, input, output):
+                hs = output[0] if isinstance(output, tuple) else output
+                caches[li] = hs[:, -1, :].detach()
+
+            return _hook
+
+        for li in ref_layers:
+            handles.append(layers[li].register_forward_hook(_make_hook(li)))
+
+        with torch.no_grad():
+            outputs = model(**tokens)
+
+        for h in handles:
+            h.remove()
+
+        # Generate answer to check correctness
+        logits = outputs.logits[0, -1, :]
+        nid = int(logits.argmax().item())
+        gids = [nid]
+        past_tokens = tokens.input_ids
+        for _ in range(19):
+            if nid == tokenizer.eos_token_id:
+                break
+            past_tokens = torch.cat(
+                [past_tokens, torch.tensor([[nid]], device=device)], dim=1
+            )
+            with torch.no_grad():
+                logits = model(past_tokens).logits
+            nid = int(logits[0, -1, :].argmax().item())
+            gids.append(nid)
+
+        ans = tokenizer.decode(gids, skip_special_tokens=True).strip()
+        is_correct = check_correct(ans, s["answers"], dataset="triviaqa")
+
+        for li in ref_layers:
+            if li in caches:
+                h_vec = caches[li].float().cpu().numpy().flatten()
+                if is_correct:
+                    h_correct[li].append(h_vec)
+                else:
+                    h_incorrect[li].append(h_vec)
+
+    # Compute AUROC per layer
+    auroc_dict = {}
+    for li in ref_layers:
+        if len(h_correct[li]) == 0 or len(h_incorrect[li]) == 0:
+            auroc_dict[li] = 0.5
+            continue
+        h_all = np.stack(h_correct[li] + h_incorrect[li])
+        labels = np.array([1] * len(h_correct[li]) + [0] * len(h_incorrect[li]))
+        v = h_all[labels == 1].mean(axis=0) - h_all[labels == 0].mean(axis=0)
+        v_norm = np.linalg.norm(v)
+        if v_norm > 1e-10:
+            v = v / v_norm
+        scores = h_all @ v
+        auroc_dict[li] = _compute_auroc(scores, labels)
+
+    return auroc_dict
 
 
 # Qwen3-1.7B model path (auto-detected or use cache)
@@ -255,6 +381,8 @@ def train_lora_delta(args):
         f"d_model={model.config.hidden_size}, "
         f"target L{layer_early}-L{layer_late}"
     )
+    if getattr(args, "target_layers", None):
+        print(f"  LoRA on sparse layers: {lora_target_layers}")
     print(f"  Loaded in {time.time() - t0:.1f}s")
 
     # ── 2. Load training data ────────────────────────────────────────────
@@ -263,8 +391,130 @@ def train_lora_delta(args):
     train_dataset = TriviaQADataset(train_samples, tokenizer)
     print(f"  Valid samples: {len(train_dataset)}/{args.n_train}")
 
+    # ── 2.5. Pre-compute v (truth direction) if v·h weighting enabled ──────
+    v_direction = None
+    v_median = None
+    if getattr(args, "vh_weight", False):
+        print(f"\n[2.5a] Computing v·h truth direction at L{layer_early}...")
+        # Use a small subset of training data for calibration
+        n_calib = min(100, len(train_samples))
+        calib_samples = train_samples[:n_calib]
+
+        # Navigate layers (model not yet wrapped in PeftModel)
+        _layers = model.model.layers
+        _norm = model.model.norm
+        _lm_head = model.lm_head
+
+        h_correct_list = []
+        h_incorrect_list = []
+
+        for s in tqdm(calib_samples, desc="  Calibrate v"):
+            prompt = format_prompt(
+                s["question"], s.get("context", ""), dataset="triviaqa"
+            )
+            tokens = tokenizer(prompt, return_tensors="pt").to(device)
+            if tokens.input_ids.shape[1] > 1024:
+                tokens.input_ids = tokens.input_ids[:, :1024]
+
+            # Hook at reference layer
+            _cache = {}
+
+            def _vh_hook(module, input, output):
+                hs = output[0] if isinstance(output, tuple) else output
+                _cache["h"] = hs[:, -1, :].detach()
+
+            _handle = _layers[layer_early].register_forward_hook(_vh_hook)
+
+            with torch.no_grad():
+                outputs = model(**tokens)
+            _handle.remove()
+
+            # Generate answer to check correctness
+            logits = outputs.logits[0, -1, :]
+            nid = int(logits.argmax().item())
+            gids = [nid]
+            past = tokens.input_ids
+            for _ in range(19):
+                if nid == tokenizer.eos_token_id:
+                    break
+                past = torch.cat([past, torch.tensor([[nid]], device=device)], dim=1)
+                with torch.no_grad():
+                    logits = model(past).logits
+                nid = int(logits[0, -1, :].argmax().item())
+                gids.append(nid)
+            ans = tokenizer.decode(gids, skip_special_tokens=True).strip()
+            is_correct = check_correct(ans, s["answers"], dataset="triviaqa")
+
+            h_vec = _cache["h"].float().cpu().numpy().flatten()
+            if is_correct:
+                h_correct_list.append(h_vec)
+            else:
+                h_incorrect_list.append(h_vec)
+
+        if len(h_correct_list) > 0 and len(h_incorrect_list) > 0:
+            h_c = np.stack(h_correct_list)
+            h_i = np.stack(h_incorrect_list)
+            v_np = h_c.mean(axis=0) - h_i.mean(axis=0)
+            v_norm = np.linalg.norm(v_np)
+            if v_norm > 1e-10:
+                v_np = v_np / v_norm
+            v_direction = torch.from_numpy(v_np).float().to(device)
+
+            # Compute s(x) = v·h for all calibration samples → median
+            h_all = np.concatenate([h_c, h_i], axis=0)
+            s_scores = h_all @ v_np
+            v_median = float(np.median(s_scores))
+            print(
+                f"  v computed: n_correct={len(h_correct_list)}, "
+                f"n_incorrect={len(h_incorrect_list)}, "
+                f"v_norm={v_norm:.4f}, s_median={v_median:.4f}"
+            )
+        else:
+            print("  WARNING: not enough correct/incorrect samples, v·h disabled")
+            args.vh_weight = False
+
+    # ── 2.6. Compute per-layer AUROC if multi-ref with auroc weights ──────
+    ref_layers_list = None
+    ref_alphas = None
+    if getattr(args, "multi_ref", False):
+        ref_layers_list = [int(x.strip()) for x in args.ref_layers.split(",")]
+        # Validate: all ref layers must be < layer_early (before the last N layers)
+        # In 8B mode: ref_layers are absolute indices like 24,26,28,30
+        if getattr(args, "ref_weights", "uniform") == "auroc":
+            print(
+                f"\n[2.6] Computing per-layer AUROC for ref layers {ref_layers_list}..."
+            )
+            n_auroc = min(100, len(train_samples))
+            _layers2 = model.model.layers
+            auroc_dict = _compute_ref_layer_auroc(
+                model, tokenizer, train_samples[:n_auroc], ref_layers_list, device
+            )
+            total = sum(auroc_dict.values())
+            ref_alphas = [
+                auroc_dict[li] / total if total > 0 else 1.0 / len(ref_layers_list)
+                for li in ref_layers_list
+            ]
+            print(
+                f"  AUROC: {dict(zip(ref_layers_list, [f'{a:.4f}' for a in ref_alphas]))}"
+            )
+        else:
+            ref_alphas = [1.0 / len(ref_layers_list)] * len(ref_layers_list)
+            print(f"\n[2.6] Multi-ref δ: layers={ref_layers_list}, weights=uniform")
+        print(
+            f"  Ref alphas: {dict(zip(ref_layers_list, [f'{a:.4f}' for a in ref_alphas]))}"
+        )
+
     # ── 3. Apply LoRA ─────────────────────────────────────────────────────
-    print(f"\n[3/6] Applying LoRA (r={args.lora_r}, α={args.lora_alpha})...")
+    # Resolve target layers for LoRA (supports sparse via --target_layers)
+    if getattr(args, "target_layers", None):
+        lora_target_layers = [int(x.strip()) for x in args.target_layers.split(",")]
+    else:
+        lora_target_layers = list(range(layer_early, layer_late + 1))
+
+    print(
+        f"\n[3/6] Applying LoRA (r={args.lora_r}, α={args.lora_alpha}) "
+        f"to layers {lora_target_layers}..."
+    )
     from peft import LoraConfig, get_peft_model, TaskType
 
     lora_config = LoraConfig(
@@ -273,7 +523,7 @@ def train_lora_delta(args):
         lora_alpha=args.lora_alpha,
         lora_dropout=0.05,
         target_modules=["q_proj", "v_proj"],
-        layers_to_transform=list(range(layer_early, layer_late + 1)),
+        layers_to_transform=lora_target_layers,
     )
     model = get_peft_model(model, lora_config)
     if hasattr(model, "gradient_checkpointing_enable"):
@@ -282,17 +532,11 @@ def train_lora_delta(args):
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"  Trainable params: {n_trainable:,}")
 
-    # ── 4. Register hook to capture h_L20 ─────────────────────────────────
-    h_L20_cache = {}
+    # ── 4. Register hooks ────────────────────────────────────────────────────
+    h_ref_caches = {}  # {layer_idx: {"h": tensor}}
+    ref_handles = []
 
-    def _capture_h_L20(module, input, output):
-        # output is a tuple (hidden_states,) or just hidden_states
-        hs = output[0] if isinstance(output, tuple) else output
-        h_L20_cache["h"] = hs.detach()  # [B, seq, d_model]
-
-    # Find the L20 block
-    # With PeftModel: model.base_model.model.model.layers[i]
-    # But with modules_to_save or other wrappers, the path may vary
+    # Navigate layers (post-PeftModel wrapping)
     try:
         layers = model.base_model.model.model.layers
     except AttributeError:
@@ -300,9 +544,32 @@ def train_lora_delta(args):
             layers = model.model.model.layers
         except AttributeError:
             layers = model.model.layers
-    h_L20_handle = layers[layer_early].register_forward_hook(_capture_h_L20)
 
-    # Get norm and lm_head for L20 logit computation
+    use_multi_ref = getattr(args, "multi_ref", False) and ref_layers_list is not None
+
+    if use_multi_ref:
+        # Register hooks for all reference layers
+        for li in ref_layers_list:
+            cache = {}
+            h_ref_caches[li] = cache
+
+            def _make_multi_hook(module, input, output, _layer=li, _cache=cache):
+                hs = output[0] if isinstance(output, tuple) else output
+                _cache["h"] = hs.detach()  # [B, seq, d_model]
+
+            ref_handles.append(layers[li].register_forward_hook(_make_multi_hook))
+        print(f"  Multi-ref hooks registered: layers {ref_layers_list}")
+    else:
+        # Single reference layer (original behavior)
+        h_ref_caches[layer_early] = {}
+
+        def _capture_single(module, input, output):
+            hs = output[0] if isinstance(output, tuple) else output
+            h_ref_caches[layer_early]["h"] = hs.detach()
+
+        ref_handles.append(layers[layer_early].register_forward_hook(_capture_single))
+
+    # Get norm and lm_head for logit computation
     try:
         norm = model.base_model.model.model.norm
         lm_head = model.base_model.model.lm_head
@@ -315,9 +582,23 @@ def train_lora_delta(args):
             lm_head = model.lm_head
 
     # ── 5. Train ──────────────────────────────────────────────────────────
+    mode_flags = []
+    if getattr(args, "target_layers", None):
+        mode_flags.append(
+            f"sparse_lora({','.join(str(l) for l in lora_target_layers)})"
+        )
+    if use_multi_ref:
+        mode_flags.append(f"multi_ref({','.join(str(l) for l in ref_layers_list)})")
+    if getattr(args, "vh_weight", False):
+        mode_flags.append(f"vh(α={getattr(args, 'vh_alpha', 5.0)})")
+    if args.kc_ce_only and not getattr(args, "vh_weight", False):
+        mode_flags.append("kc_ce_only")
+    mode_str = " | " + " + ".join(mode_flags) if mode_flags else ""
+
     print(
         f"\n[5/6] Training | lr={args.lr} batch_size={args.batch_size} "
         f"epochs={args.epochs} lambda={args.lambda_delta} margin={args.margin}"
+        f"{mode_str}"
     )
 
     optimizer = torch.optim.AdamW(
@@ -348,8 +629,9 @@ def train_lora_delta(args):
             y_true_ids = batch["y_true_ids"].to(device)  # [B]
             B = input_ids.shape[0]
 
-            # Clear cache
-            h_L20_cache.clear()
+            # Clear all ref caches
+            for cache in h_ref_caches.values():
+                cache.clear()
 
             # Forward through full model (computes CE loss internally if labels given)
             outputs = model(input_ids=input_ids, labels=labels)
@@ -359,8 +641,6 @@ def train_lora_delta(args):
             logits_L27 = outputs.logits.detach()  # [B, seq, vocab]
 
             # Find the last non-masked position for each sample
-            # Labels are -100 for prompt, token_id for answer
-            # The answer position is the last non-(-100) position
             last_positions = []
             for b_idx in range(B):
                 non_mask = (labels[b_idx] != -100).nonzero(as_tuple=True)[0]
@@ -370,44 +650,74 @@ def train_lora_delta(args):
                     last_positions.append(labels.shape[1] - 1)
 
             # Gather L27 logits at answer positions
-            logits_L27_last = torch.stack(
+            g_L27 = torch.stack(
                 [logits_L27[b, last_positions[b], :] for b in range(B)]
-            )  # [B, vocab]
+            ).float()  # [B, vocab]
 
-            # Get h_L20 at answer positions → L20 logits
-            h_L20 = h_L20_cache.get("h")  # [B, seq, d_model]
-            if h_L20 is None:
-                # Fallback: skip δ regularization if hook didn't fire
+            # Compute reference logits (single or multi-ref)
+            has_ref_logits = False
+            if use_multi_ref:
+                # Multi-ref: g_ref = Σ α_ℓ · y_ℓ(t)
+                g_ref = torch.zeros_like(g_L27)
+                for i, li in enumerate(ref_layers_list):
+                    h_li = h_ref_caches.get(li, {}).get("h")
+                    if h_li is not None:
+                        h_li_last = torch.stack(
+                            [h_li[b, last_positions[b], :] for b in range(B)]
+                        )
+                        h_li_norm = norm(h_li_last.to(dtype=norm.weight.dtype))
+                        logits_li = lm_head(h_li_norm).float()
+                        g_ref = g_ref + ref_alphas[i] * logits_li
+                        has_ref_logits = True
+                if has_ref_logits:
+                    h_vh = h_ref_caches.get(ref_layers_list[0], {}).get("h")
+            else:
+                # Single ref: original behavior
+                h_early = h_ref_caches.get(layer_early, {}).get("h")
+                if h_early is not None:
+                    h_early_last = torch.stack(
+                        [h_early[b, last_positions[b], :] for b in range(B)]
+                    )
+                    h_early_norm = norm(h_early_last.to(dtype=norm.weight.dtype))
+                    g_ref = lm_head(h_early_norm).float()
+                    h_vh = h_early
+                    has_ref_logits = True
+
+            # Compute δ penalty
+            if not has_ref_logits:
                 delta_loss = torch.tensor(0.0, device=device)
             else:
-                h_L20_last = torch.stack(
-                    [h_L20[b, last_positions[b], :] for b in range(B)]
-                )  # [B, d_model]
-
-                # Compute L20 logits
-                h_L20_norm = norm(h_L20_last.to(dtype=norm.weight.dtype))
-                logits_L20 = lm_head(h_L20_norm)  # [B, vocab]
-
-                # Channel gain: g(t) = y_L27(t) - y_L20(t)
-                g_L27 = logits_L27_last.float()
-                g_L20 = logits_L20.float()
-
                 # Distractor: argmax of L27 logits
                 d_ids = g_L27.argmax(dim=-1)  # [B]
 
                 # g(d) - g(t*) for each sample
-                g_d = g_L27[torch.arange(B), d_ids] - g_L20[torch.arange(B), d_ids]
+                g_d = g_L27[torch.arange(B), d_ids] - g_ref[torch.arange(B), d_ids]
                 g_tstar = (
                     g_L27[torch.arange(B), y_true_ids]
-                    - g_L20[torch.arange(B), y_true_ids]
+                    - g_ref[torch.arange(B), y_true_ids]
                 )
 
                 # δ penalty: max(0, g(d) - g(t*) + m)
                 penalty = F.relu(g_d - g_tstar + args.margin)
-                # KC-like samples: y_true already = argmax → skip δ penalty
-                if args.kc_ce_only:
-                    kc_mask = (y_true_ids == d_ids).float()  # 1=KC, 0=KW-like
+
+                # KC mask (always available as fallback)
+                kc_mask = (y_true_ids == d_ids).float()  # 1=KC, 0=KW-like
+
+                if getattr(args, "vh_weight", False) and v_direction is not None:
+                    # v·h continuous weighting
+                    h_vh_last = torch.stack(
+                        [h_vh[b, last_positions[b], :] for b in range(B)]
+                    )  # [B, d_model]
+                    s_score = torch.matmul(
+                        h_vh_last.float(), v_direction
+                    )  # [B], already normalized v
+                    vh_alpha = getattr(args, "vh_alpha", 5.0)
+                    w = 1.0 - torch.sigmoid(vh_alpha * (s_score - v_median))
+                    penalty = penalty * w
+                elif args.kc_ce_only:
+                    # Binary KC mask (original behavior)
                     penalty = penalty * (1 - kc_mask)
+
                 delta_loss = penalty.mean()
 
             loss = ce_loss + args.lambda_delta * delta_loss
@@ -461,7 +771,8 @@ def train_lora_delta(args):
             best_loss = avg_loss
 
     # ── 6. Cleanup & save metadata ────────────────────────────────────────
-    h_L20_handle.remove()
+    for h in ref_handles:
+        h.remove()
     print(f"\n[6/6] Saving metadata...")
     results = {
         "config": {
@@ -471,6 +782,7 @@ def train_lora_delta(args):
             "seed": args.seed,
             "layers": f"L{layer_early}-L{layer_late}",
             "target_modules": ["q_proj", "v_proj"],
+            "lora_target_layers": lora_target_layers,
             "lora_r": args.lora_r,
             "lora_alpha": args.lora_alpha,
             "lr": args.lr,
@@ -479,6 +791,14 @@ def train_lora_delta(args):
             "lambda_delta": args.lambda_delta,
             "margin": args.margin,
             "model_path": MODEL_PATH,
+            "multi_ref": use_multi_ref,
+            "ref_layers": ref_layers_list if use_multi_ref else None,
+            "ref_weights": args.ref_weights if use_multi_ref else None,
+            "vh_weight": getattr(args, "vh_weight", False),
+            "vh_alpha": getattr(args, "vh_alpha", 5.0)
+            if getattr(args, "vh_weight", False)
+            else None,
+            "kc_ce_only": args.kc_ce_only,
         },
         "train_losses": train_losses,
         "best_loss": best_loss,
@@ -822,6 +1142,45 @@ def main():
         "--kc_ce_only",
         action="store_true",
         help="Apply CE-only loss to KC-like samples (y_true == argmax)",
+    )
+    # Multi-reference δ
+    parser.add_argument(
+        "--multi_ref",
+        action="store_true",
+        help="Use multiple reference layers for δ aggregation",
+    )
+    parser.add_argument(
+        "--ref_layers",
+        type=str,
+        default="24,26,28,30",
+        help="Comma-separated reference layer indices for multi-ref (relative to model layers)",
+    )
+    parser.add_argument(
+        "--ref_weights",
+        type=str,
+        default="uniform",
+        choices=["uniform", "auroc"],
+        help="Weighting scheme: uniform or auroc (per-layer AUROC-based)",
+    )
+    # v·h adaptive weighting
+    parser.add_argument(
+        "--vh_weight",
+        action="store_true",
+        help="Use v·h truth direction for continuous δ penalty weighting",
+    )
+    parser.add_argument(
+        "--vh_alpha",
+        type=float,
+        default=5.0,
+        help="Sharpness of v·h sigmoid weighting (higher = sharper transition)",
+    )
+    # Sparse LoRA: only apply to specific layers
+    parser.add_argument(
+        "--target_layers",
+        type=str,
+        default=None,
+        help="Comma-separated layer indices for sparse LoRA (e.g. '32,33,34,35'). "
+        "Default: all NUM_DELTA_LAYERS late layers.",
     )
     # Eval
     parser.add_argument("--n_test", type=int, default=100)
