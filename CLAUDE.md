@@ -35,7 +35,7 @@ GPU: RTX 5090 32GB | CPU: 25 核 | RAM: 90 GB
   - 1.7B: `models--Qwen--Qwen3-1.7B`
   - 8B: `models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218`
 长期执行命令用 `screen` 或 `tmux`，防 SSH 断开中断
-代码同步: 本地修改 → Claude 负责 commit → 用户 push → 服务器 `git pull`
+代码同步: 本地修改 → Claude 负责 commit → 用户 push → 服务器 `cd /root/CLARIFY && git pull`
 **8B 模型实验必须在服务器上跑**（本地 RTX 5060 8GB 显存不足）
 服务器文件下载到本地:
   - **在本地终端执行**（不是在服务器上），`<port>` 和 `<host>` 从 AutoDL 控制台 SSH 登录命令获取
