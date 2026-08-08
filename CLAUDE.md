@@ -47,7 +47,7 @@ GPU: RTX 5090 32GB | CPU: 25 核 | RAM: 90 GB
 	  - `train_lora_delta.py` 第 67-69 行硬编码了 `os.environ["HF_*_OFFLINE"] = "1"`，导致 `from_pretrained("Qwen/Qwen3-8B")` 无法解析 repo id → 必须传快照完整路径
 	  - `~/.bashrc` 中 `HF_ENDPOINT` 指向 `hf-mirror.com`，国内镜像不可达时也会失败 → 运行前 `unset HF_ENDPOINT`
 	  - 标准启动命令: `HF_HOME=/root/autodl-tmp/huggingface_cache python ... --model_path Qwen/Qwen3-8B`（必须先 unset HF_ENDPOINT）
-	  - **命令必须单行**：服务器终端换行 `\` 会被截断导致参数丢失，所有命令用 `&&` 串联或写在一行
+	  - **命令用多行 `\` 格式**，每行一个参数，清晰可读
 
 ## Key Conventions
 
