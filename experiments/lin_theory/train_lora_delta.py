@@ -383,8 +383,6 @@ def train_lora_delta(args):
         f"d_model={model.config.hidden_size}, "
         f"target L{layer_early}-L{layer_late}"
     )
-    if getattr(args, "target_layers", None):
-        print(f"  LoRA on sparse layers: {lora_target_layers}")
     print(f"  Loaded in {time.time() - t0:.1f}s")
 
     # ── 2. Load training data ────────────────────────────────────────────
