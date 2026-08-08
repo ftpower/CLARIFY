@@ -46,6 +46,20 @@ Usage:
   python train_lora_delta.py --mode train --model_path /path/to/Qwen3-8B \\
       --n_train 200 --batch_size 1 --epochs 1 --vh_weight --vh_alpha 5.0 \\
       --multi_ref --ref_layers 24,26,28,30 --ref_weights auroc --lambda_delta 0.0025
+
+  # Direction B: Token-level δ (d* = argmax excluding y_true)
+  python train_lora_delta.py --mode train --model_path /path/to/Qwen3-8B \\
+      --n_train 200 --batch_size 1 --epochs 1 --kc_ce_only --lambda_delta 0.0025 \\
+      --token_level_delta --token_delta_margin 0.5
+
+  # Direction D: λ fine sweep
+  python train_lora_delta.py --mode train --model_path /path/to/Qwen3-8B \\
+      --n_train 200 --batch_size 1 --epochs 1 --kc_ce_only \\
+      --lambda_values 0.0022,0.0023,0.0024,0.0025,0.0026,0.0027,0.0028
+
+  # Direction A: large training set
+  python train_lora_delta.py --mode train --model_path /path/to/Qwen3-8B \\
+      --n_train 2000 --batch_size 1 --epochs 1 --kc_ce_only --lambda_delta 0.0025
 """
 
 import argparse
@@ -687,36 +701,64 @@ def train_lora_delta(args):
             if not has_ref_logits:
                 delta_loss = torch.tensor(0.0, device=device)
             else:
-                # Distractor: argmax of L27 logits
-                d_ids = g_L27.argmax(dim=-1)  # [B]
+                if getattr(args, "token_level_delta", False):
+                    # ── Direction B: Token-level δ ──────────────────────────────
+                    # d* = argmax_{t ≠ y_true} — distractor excluding true answer.
+                    # Penalise only the distractor token's channel gain, not a
+                    # global scalar margin that confuses override with legitimate
+                    # refinement.  KC samples (where argmax == y_true) still get
+                    # penalised on their runner-up token, keeping the margin
+                    # honest without the kc_ce_only binary gate.
+                    g_masked = g_L27.clone()
+                    g_masked[torch.arange(B, device=device), y_true_ids] = -float("inf")
+                    d_ids = g_masked.argmax(dim=-1)  # d* = best WRONG token
 
-                # g(d) - g(t*) for each sample
-                g_d = g_L27[torch.arange(B), d_ids] - g_ref[torch.arange(B), d_ids]
-                g_tstar = (
-                    g_L27[torch.arange(B), y_true_ids]
-                    - g_ref[torch.arange(B), y_true_ids]
-                )
+                    g_d = g_L27[torch.arange(B, device=device), d_ids]                         - g_ref[torch.arange(B, device=device), d_ids]
+                    g_tstar = (
+                        g_L27[torch.arange(B, device=device), y_true_ids]
+                        - g_ref[torch.arange(B, device=device), y_true_ids]
+                    )
 
-                # δ penalty: max(0, g(d) - g(t*) + m)
-                penalty = F.relu(g_d - g_tstar + args.margin)
+                    # Same margin formula but d* excludes y_true by construction;
+                    # kc_ce_only can still be used for ablation comparison.
+                    margin_b = getattr(args, "token_delta_margin", 0.5)
+                    penalty = F.relu(g_d - g_tstar + margin_b)
 
-                # KC mask (always available as fallback)
-                kc_mask = (y_true_ids == d_ids).float()  # 1=KC, 0=KW-like
+                    if args.kc_ce_only:
+                        kc_mask_b = (y_true_ids == g_L27.argmax(dim=-1)).float()
+                        penalty = penalty * (1 - kc_mask_b)
+                else:
+                    # ── Original: global-margin δ ──────────────────────────────
+                    # Distractor: argmax of L27 logits
+                    d_ids = g_L27.argmax(dim=-1)  # [B]
 
-                if getattr(args, "vh_weight", False) and v_direction is not None:
-                    # v·h continuous weighting
-                    h_vh_last = torch.stack(
-                        [h_vh[b, last_positions[b], :] for b in range(B)]
-                    )  # [B, d_model]
-                    s_score = torch.matmul(
-                        h_vh_last.float(), v_direction
-                    )  # [B], already normalized v
-                    vh_alpha = getattr(args, "vh_alpha", 5.0)
-                    w = 1.0 - torch.sigmoid(vh_alpha * (s_score - v_median))
-                    penalty = penalty * w
-                elif args.kc_ce_only:
-                    # Binary KC mask (original behavior)
-                    penalty = penalty * (1 - kc_mask)
+                    # g(d) - g(t*) for each sample
+                    g_d = g_L27[torch.arange(B, device=device), d_ids]                         - g_ref[torch.arange(B, device=device), d_ids]
+                    g_tstar = (
+                        g_L27[torch.arange(B, device=device), y_true_ids]
+                        - g_ref[torch.arange(B, device=device), y_true_ids]
+                    )
+
+                    # δ penalty: max(0, g(d) - g(t*) + m)
+                    penalty = F.relu(g_d - g_tstar + args.margin)
+
+                    # KC mask (always available as fallback)
+                    kc_mask = (y_true_ids == d_ids).float()  # 1=KC, 0=KW-like
+
+                    if getattr(args, "vh_weight", False) and v_direction is not None:
+                        # v·h continuous weighting
+                        h_vh_last = torch.stack(
+                            [h_vh[b, last_positions[b], :] for b in range(B)]
+                        )  # [B, d_model]
+                        s_score = torch.matmul(
+                            h_vh_last.float(), v_direction
+                        )  # [B], already normalized v
+                        vh_alpha = getattr(args, "vh_alpha", 5.0)
+                        w = 1.0 - torch.sigmoid(vh_alpha * (s_score - v_median))
+                        penalty = penalty * w
+                    elif args.kc_ce_only:
+                        # Binary KC mask (original behavior)
+                        penalty = penalty * (1 - kc_mask)
 
                 delta_loss = penalty.mean()
 
@@ -1142,6 +1184,21 @@ def main():
         "--kc_ce_only",
         action="store_true",
         help="Apply CE-only loss to KC-like samples (y_true == argmax)",
+    )
+    # Token-level δ (Direction B)
+    parser.add_argument(
+        "--token_level_delta",
+        action="store_true",
+        help="Use token-level δ: d* = argmax_{t != y_true}, "
+        "only penalise distractor token (not global margin). "
+        "Direction B in phase20-8b-validation plan.",
+    )
+    parser.add_argument(
+        "--token_delta_margin",
+        type=float,
+        default=0.5,
+        help="Margin for token-level δ penalty (default 0.5, smaller than "
+        "global margin because the signal is more targeted).",
     )
     # Multi-reference δ
     parser.add_argument(
