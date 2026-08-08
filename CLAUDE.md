@@ -31,7 +31,9 @@ Conda: `base` (miniconda3) | CUDA: 13.0
 GPU: RTX 5090 32GB | CPU: 25 核 | RAM: 90 GB
 系统盘: 30G (`/`) | 数据盘: 50G (`/root/autodl-tmp`，IO 更快)
 项目路径: `/root/CLARIFY`
-模型缓存: `~/.cache/huggingface/hub/`
+模型缓存: `/root/autodl-tmp/huggingface_cache/hub/`
+  - 1.7B: `models--Qwen--Qwen3-1.7B`
+  - 8B: `models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218`
 长期执行命令用 `screen` 或 `tmux`，防 SSH 断开中断
 代码同步: 本地修改 → Claude 负责 commit → 用户 push → 服务器 `git pull`
 **8B 模型实验必须在服务器上跑**（本地 RTX 5060 8GB 显存不足）
@@ -41,6 +43,11 @@ GPU: RTX 5090 32GB | CPU: 25 核 | RAM: 90 GB
   - `scp -rP <port> root@<host>:/root/CLARIFY/<path> D:\Download\`
   - 示例: `scp -rP 23402 root@connect.westd.seetacloud.com:/root/CLARIFY/experiments/phase16_untried/outputs_phase16 D:\Download\`
   - WSL 用户: 下载到 `~` 即可，`scp -rP <port> root@<host>:/root/CLARIFY/<path> ~/`
+	**服务器排查**:
+	  - `train_lora_delta.py` 第 67-69 行硬编码了 `os.environ["HF_*_OFFLINE"] = "1"`，导致 `from_pretrained("Qwen/Qwen3-8B")` 无法解析 repo id → 必须传快照完整路径
+	  - `~/.bashrc` 中 `HF_ENDPOINT` 指向 `hf-mirror.com`，国内镜像不可达时也会失败 → 运行前 `unset HF_ENDPOINT`
+	  - 标准启动命令: `HF_HOME=/root/autodl-tmp/huggingface_cache python ... --model_path Qwen/Qwen3-8B`（必须先 unset HF_ENDPOINT）
+	  - **命令必须单行**：服务器终端换行 `\` 会被截断导致参数丢失，所有命令用 `&&` 串联或写在一行
 
 ## Key Conventions
 

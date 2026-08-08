@@ -64,9 +64,11 @@ from tqdm import tqdm
 
 # ── Environment ────────────────────────────────────────────────────────────────
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-os.environ["HF_DATASETS_OFFLINE"] = "1"
-os.environ["HF_HUB_OFFLINE"] = "1"
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
+_offline = os.environ.get("HF_ALLOW_ONLINE", "") != "1"
+if _offline:
+    os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
 
 # ── Path setup ─────────────────────────────────────────────────────────────────
 _sys_parent = Path(__file__).parent.parent
@@ -146,9 +148,9 @@ def _compute_ref_layer_auroc(
 
     for s in samples:
         prompt = format_prompt(s["question"], s.get("context", ""), dataset="triviaqa")
-        tokens = tokenizer(prompt, return_tensors="pt").to(device)
-        if tokens.input_ids.shape[1] > 1024:
-            tokens.input_ids = tokens.input_ids[:, :1024]
+        tokens = tokenizer(
+            prompt, return_tensors="pt", truncation=True, max_length=1024
+        ).to(device)
 
         # Register hooks for all ref layers in one forward pass
         caches = {}
@@ -412,9 +414,9 @@ def train_lora_delta(args):
             prompt = format_prompt(
                 s["question"], s.get("context", ""), dataset="triviaqa"
             )
-            tokens = tokenizer(prompt, return_tensors="pt").to(device)
-            if tokens.input_ids.shape[1] > 1024:
-                tokens.input_ids = tokens.input_ids[:, :1024]
+            tokens = tokenizer(
+                prompt, return_tensors="pt", truncation=True, max_length=1024
+            ).to(device)
 
             # Hook at reference layer
             _cache = {}
