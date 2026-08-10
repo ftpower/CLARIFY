@@ -296,10 +296,14 @@ def analyze_kappa(args):
 
         # Compute logits from both layers
         h_ref_norm = norm(h_ref.to(dtype=norm.weight.dtype))
-        logits_ref = lm_head(h_ref_norm).float().cpu().numpy().flatten()  # [vocab]
+        logits_ref = (
+            lm_head(h_ref_norm).float().detach().cpu().numpy().flatten()
+        )  # [vocab]
 
         h_last_norm = norm(h_last.to(dtype=norm.weight.dtype))
-        logits_last = lm_head(h_last_norm).float().cpu().numpy().flatten()  # [vocab]
+        logits_last = (
+            lm_head(h_last_norm).float().detach().cpu().numpy().flatten()
+        )  # [vocab]
 
         g = logits_last - logits_ref  # channel gain [vocab]
         logits_first = torch.from_numpy(logits_last)  # for classification
