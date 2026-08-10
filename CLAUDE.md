@@ -46,8 +46,22 @@ GPU: RTX 5090 32GB | CPU: 25 核 | RAM: 90 GB
 	**服务器排查**:
 	  - `train_lora_delta.py` 第 67-69 行硬编码了 `os.environ["HF_*_OFFLINE"] = "1"`，导致 `from_pretrained("Qwen/Qwen3-8B")` 无法解析 repo id → 必须传快照完整路径
 	  - `~/.bashrc` 中 `HF_ENDPOINT` 指向 `hf-mirror.com`，国内镜像不可达时也会失败 → 运行前 `unset HF_ENDPOINT`
-	  - 标准启动命令: `HF_HOME=/root/autodl-tmp/huggingface_cache python ... --model_path Qwen/Qwen3-8B`（必须先 unset HF_ENDPOINT）
-	  - **命令用单行**：多行 `\` 复制到服务器终端时反斜杠容易丢失导致参数被当作独立命令，用单行或用 `M=...` 变量缩短
+	  - **服务器命令格式（硬性要求）**：
+	    1. 必须以 `unset HF_ENDPOINT && HF_HOME=/root/autodl-tmp/huggingface_cache python -u \` 开头
+	    2. 每个参数独占一行，行末 `\` 续行
+	    3. 不要输出单行命令（太长，用户看不清参数），也不要输出缺少 `unset HF_ENDPOINT` 的命令
+	    4. 示例：
+	    ```bash
+	    unset HF_ENDPOINT && HF_HOME=/root/autodl-tmp/huggingface_cache python -u \
+	      experiments/lin_theory/train_lora_delta.py \
+	      --mode train \
+	      --model_path /root/autodl-tmp/huggingface_cache/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218 \
+	      --n_train 200 \
+	      --batch_size 1 \
+	      --epochs 1 \
+	      --kc_ce_only \
+	      --lambda_delta 0.0025
+	    ```
 
 ## Key Conventions
 

@@ -713,7 +713,10 @@ def train_lora_delta(args):
                     g_masked[torch.arange(B, device=device), y_true_ids] = -float("inf")
                     d_ids = g_masked.argmax(dim=-1)  # d* = best WRONG token
 
-                    g_d = g_L27[torch.arange(B, device=device), d_ids]                         - g_ref[torch.arange(B, device=device), d_ids]
+                    g_d = (
+                        g_L27[torch.arange(B, device=device), d_ids]
+                        - g_ref[torch.arange(B, device=device), d_ids]
+                    )
                     g_tstar = (
                         g_L27[torch.arange(B, device=device), y_true_ids]
                         - g_ref[torch.arange(B, device=device), y_true_ids]
@@ -733,7 +736,10 @@ def train_lora_delta(args):
                     d_ids = g_L27.argmax(dim=-1)  # [B]
 
                     # g(d) - g(t*) for each sample
-                    g_d = g_L27[torch.arange(B, device=device), d_ids]                         - g_ref[torch.arange(B, device=device), d_ids]
+                    g_d = (
+                        g_L27[torch.arange(B, device=device), d_ids]
+                        - g_ref[torch.arange(B, device=device), d_ids]
+                    )
                     g_tstar = (
                         g_L27[torch.arange(B, device=device), y_true_ids]
                         - g_ref[torch.arange(B, device=device), y_true_ids]
@@ -976,7 +982,33 @@ def evaluate(args):
         base = AutoModelForCausalLM.from_pretrained(
             MODEL_PATH, **hf_kwargs, torch_dtype=torch.float16
         ).to(device)
-        lora_model = PeftModel.from_pretrained(base, str(lora_dir))
+        # Load adapter, handling layers_to_transform across PEFT versions
+        _cfg = json.loads((lora_dir / "adapter_config.json").read_text())
+        _lt = _cfg.pop("layers_to_transform", None)
+        from peft import LoraConfig as _LoraConfig
+
+        _peft_cfg_fields = {
+            "task_type",
+            "r",
+            "lora_alpha",
+            "lora_dropout",
+            "target_modules",
+            "bias",
+            "layers_to_transform",
+            "layers_pattern",
+            "rank_pattern",
+            "alpha_pattern",
+            "fan_in_fan_out",
+            "init_lora_weights",
+            "use_dora",
+            "use_rslora",
+            "loftq_config",
+        }
+        _clean_cfg = {k: v for k, v in _cfg.items() if k in _peft_cfg_fields}
+        if _lt is not None:
+            _clean_cfg["layers_to_transform"] = _lt
+        _lora_cfg = _LoraConfig(**_clean_cfg)
+        lora_model = PeftModel.from_pretrained(base, str(lora_dir), config=_lora_cfg)
         lora_model.eval()
 
         for s in tqdm(test_samples, desc="  LoRA"):
