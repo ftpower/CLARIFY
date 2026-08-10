@@ -915,6 +915,8 @@ def generate_with_model(
 def evaluate(args):
     """Evaluate LoRA model vs baseline on test set."""
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    # Allow caller to override model path (e.g., train_contrastive.py)
+    _MODEL_PATH = getattr(args, "model_path", None) or MODEL_PATH
     lora_dir = (
         Path(args.lora_checkpoint)
         if getattr(args, "lora_checkpoint", None)
@@ -930,7 +932,7 @@ def evaluate(args):
     from peft import PeftModel
 
     tokenizer = AutoTokenizer.from_pretrained(
-        MODEL_PATH, trust_remote_code=True, local_files_only=True
+        _MODEL_PATH, trust_remote_code=True, local_files_only=True
     )
     if tokenizer.pad_token_id is None:
         tokenizer.pad_token_id = tokenizer.eos_token_id
@@ -939,7 +941,7 @@ def evaluate(args):
     # ── 2. Evaluate baseline ──────────────────────────────────────────────
     print("\n[1/3] Evaluating baseline...")
     base_model = AutoModelForCausalLM.from_pretrained(
-        MODEL_PATH, **hf_kwargs, torch_dtype=torch.float16
+        _MODEL_PATH, **hf_kwargs, torch_dtype=torch.float16
     ).to(device)
     base_model.eval()
 
@@ -980,7 +982,7 @@ def evaluate(args):
     else:
         print("\n[2/3] Evaluating LoRA model...")
         base = AutoModelForCausalLM.from_pretrained(
-            MODEL_PATH, **hf_kwargs, torch_dtype=torch.float16
+            _MODEL_PATH, **hf_kwargs, torch_dtype=torch.float16
         ).to(device)
         # Load adapter, handling layers_to_transform across PEFT versions
         _cfg = json.loads((lora_dir / "adapter_config.json").read_text())
