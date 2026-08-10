@@ -607,6 +607,8 @@ def train_lora_delta(args):
         mode_flags.append(f"vh(α={getattr(args, 'vh_alpha', 5.0)})")
     if args.kc_ce_only and not getattr(args, "vh_weight", False):
         mode_flags.append("kc_ce_only")
+    if getattr(args, "dk_filter", False):
+        mode_flags.append("dk_filter")
     mode_str = " | " + " + ".join(mode_flags) if mode_flags else ""
 
     print(
@@ -766,6 +768,15 @@ def train_lora_delta(args):
                         # Binary KC mask (original behavior)
                         penalty = penalty * (1 - kc_mask)
 
+                    if getattr(args, "dk_filter", False):
+                        # DK mask: skip δ penalty when y_true rank > RANK_THRESHOLD
+                        # KW (rank 2-50) still gets penalty; DK (rank > 50) skipped
+                        rank = (g_L27 > g_L27.gather(1, y_true_ids.unsqueeze(1))).sum(
+                            dim=1
+                        ).float() + 1  # 1-indexed rank of y_true in L27 logits
+                        dk_mask = (rank > RANK_THRESHOLD).float()  # 1=DK, 0=KW
+                        penalty = penalty * (1 - dk_mask)
+
                 delta_loss = penalty.mean()
 
             loss = ce_loss + args.lambda_delta * delta_loss
@@ -847,6 +858,7 @@ def train_lora_delta(args):
             if getattr(args, "vh_weight", False)
             else None,
             "kc_ce_only": args.kc_ce_only,
+            "dk_filter": getattr(args, "dk_filter", False),
         },
         "train_losses": train_losses,
         "best_loss": best_loss,
@@ -1218,6 +1230,12 @@ def main():
         "--kc_ce_only",
         action="store_true",
         help="Apply CE-only loss to KC-like samples (y_true == argmax)",
+    )
+    parser.add_argument(
+        "--dk_filter",
+        action="store_true",
+        help="Skip δ penalty for DK samples (rank(y_true) > 50). "
+        "KW (rank 2-50) still gets penalised. Requires --kc_ce_only.",
     )
     # Token-level δ (Direction B)
     parser.add_argument(
