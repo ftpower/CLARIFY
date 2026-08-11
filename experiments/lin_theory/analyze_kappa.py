@@ -127,7 +127,7 @@ def classify_sample(
         return "KC"
     if y_true_id is None:
         return "DK"
-    sorted_indices = torch.argsort(logits, descending=True)
+    sorted_indices = torch.argsort(-logits)  # descending via negation
     rank = (sorted_indices == y_true_id).nonzero(as_tuple=True)[0].item() + 1
     return "KW" if rank <= RANK_THRESHOLD else "DK"
 
