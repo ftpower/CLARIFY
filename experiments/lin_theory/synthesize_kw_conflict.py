@@ -79,13 +79,27 @@ CONFLICT_TEMPLATES = [
     "{original_context}\n\nNotably, {dstar}.",
 ]
 
-# Full-sentence templates — dstar_text is inserted as a complete assertion
-CONFLICT_FULL_SENTENCE = [
-    "According to recent research, {dstar} is the correct answer.",
-    "Some experts argue that {dstar} is the correct answer.",
-    "It is now widely accepted that {dstar} is the correct answer.",
-    "New evidence strongly suggests that {dstar} is the correct answer.",
-]
+# Template strengths: weak → medium → strong
+# Weak:   suggestive hint, model may ignore
+# Medium: assertive claim, model may conflict
+# Strong: authoritative override, risks pushing to DK
+CONFLICT_TEMPLATES_BY_STRENGTH = {
+    "weak": [
+        "Some readers have wondered whether {dstar}.",
+        "One possible answer might be {dstar}.",
+        "It has been asked if {dstar}.",
+    ],
+    "medium": [
+        "Some experts argue that {dstar} is the correct answer.",
+        "Recent evidence points to {dstar} as the answer.",
+        "Several sources claim that {dstar} is correct.",
+    ],
+    "strong": [
+        "According to authoritative research, {dstar} is definitively the correct answer.",
+        "It is now firmly established that {dstar} is the correct answer.",
+        "All credible sources confirm that {dstar} is the right answer.",
+    ],
+}
 
 
 def _find_model_path() -> str:
@@ -113,20 +127,64 @@ def _find_model_path() -> str:
 # ── Distractor decoding ───────────────────────────────────────────────────────
 
 
+def decode_distractor_phrase(
+    model, tokenizer, prompt: str, y_true_id: int, device: str, max_tokens: int = 10
+) -> str | None:
+    """Generate a short phrase starting from the top distractor token.
+
+    Runs a short greedy decode from the model's first forward pass, forcing the
+    first generated token to be the distractor d* (not y_true). This produces a
+    semantically meaningful wrong-answer phrase that can be injected as misleading
+    context.
+    """
+    tokens = tokenizer(
+        prompt, return_tensors="pt", truncation=True, max_length=1024
+    ).to(device)
+
+    with torch.no_grad():
+        output = model(**tokens)
+    logits = output.logits[0, -1, :]  # [vocab]
+
+    # Find d* = best token that isn't y_true
+    masked = logits.clone()
+    masked[y_true_id] = -float("inf")
+    d_id = int(masked.argmax().item())
+
+    # Generate continuation from d*
+    gen_ids = [d_id]
+    current = torch.cat(
+        [tokens.input_ids, torch.tensor([[d_id]], device=device)], dim=1
+    )
+    for _ in range(max_tokens - 1):
+        with torch.no_grad():
+            out = model(current)
+        nid = int(out.logits[0, -1, :].argmax().item())
+        if nid == tokenizer.eos_token_id:
+            break
+        gen_ids.append(nid)
+        current = torch.cat([current, torch.tensor([[nid]], device=device)], dim=1)
+
+    phrase = tokenizer.decode(gen_ids, skip_special_tokens=True).strip()
+
+    # Quality filter
+    if len(phrase) < 2 or all(c in ".,;:!?-'\"()[]{} " for c in phrase):
+        return None
+    # Skip if the decoded phrase contains obvious garbage patterns
+    if phrase.count("�") > 0:  # replacement character
+        return None
+    return phrase
+
+
 def decode_top_distractor(
     logits: torch.Tensor, y_true_id: int | None, tokenizer
 ) -> str | None:
-    """Decode the top distractor token (highest-logit non-y_true token) to text.
-
-    Returns None if y_true_id is None or the decoded text is empty/gibberish.
-    """
+    """Decode the top distractor token (single token, fast fallback)."""
     if y_true_id is None or y_true_id >= len(logits):
         return None
     masked = logits.clone()
     masked[y_true_id] = -float("inf")
     d_id = int(masked.argmax().item())
     text = tokenizer.decode([d_id], skip_special_tokens=True).strip()
-    # Filter: must be at least 2 chars and not pure punctuation
     if len(text) < 2 or all(c in ".,;:!?-'\"()[]{}" for c in text):
         return None
     return text
@@ -157,28 +215,21 @@ def make_conflict_prompts(
     original_context: str,
     dstar_text: str,
 ) -> list[tuple[str, str]]:
-    """Generate conflicting prompt variants by injecting misleading context.
+    """Generate conflicting prompt variants with 3 strength levels.
 
     Returns list of (variant_label, full_prompt) tuples.
+    Labels: weak_0/1/2, medium_0/1/2, strong_0/1/2
     """
     variants = []
-    # Only use full-sentence templates for clean injection
-    for i, template in enumerate(CONFLICT_FULL_SENTENCE):
-        misleading = template.format(dstar=dstar_text)
-        # Build a prompt with the misleading context
-        if original_context.strip():
-            combined_context = misleading + "\n\n" + original_context.strip()
-        else:
-            combined_context = misleading
-        prompt = format_prompt(question, combined_context, dataset="triviaqa")
-        variants.append((f"T{i}", prompt))
-
-    # Also try a variant with misleading context ONLY (no original)
-    for i, template in enumerate(CONFLICT_FULL_SENTENCE[:2]):
-        misleading = template.format(dstar=dstar_text)
-        prompt = format_prompt(question, misleading, dataset="triviaqa")
-        variants.append((f"T{i}_only", prompt))
-
+    for strength in ["weak", "medium", "strong"]:
+        for i, template in enumerate(CONFLICT_TEMPLATES_BY_STRENGTH[strength]):
+            misleading = template.format(dstar=dstar_text)
+            if original_context.strip():
+                combined = misleading + " " + original_context.strip()
+            else:
+                combined = misleading
+            prompt = format_prompt(question, combined, dataset="triviaqa")
+            variants.append((f"{strength}_{i}", prompt))
     return variants
 
 
@@ -315,7 +366,7 @@ def synthesize_kw_conflict(args):
         baseline_results.append(
             {
                 "sample": s,
-                "base": base,
+                "base": base,  # full (tensors ok, converted at save time)
             }
         )
 
@@ -342,21 +393,28 @@ def synthesize_kw_conflict(args):
         if base["y_true_id"] is None:
             continue
 
-        # Decode the top distractor
-        dstar_text = decode_top_distractor(
-            base["logits_last"], base["y_true_id"], tokenizer
+        # Multi-token distractor phrase (more meaningful than single token)
+        prompt_clean = format_prompt(question, original_context, dataset="triviaqa")
+        dstar_text = decode_distractor_phrase(
+            model, tokenizer, prompt_clean, base["y_true_id"], device, max_tokens=8
         )
+        # Fallback to single token if multi-token fails
+        if dstar_text is None:
+            dstar_text = decode_top_distractor(
+                base["logits_last"], base["y_true_id"], tokenizer
+            )
         if dstar_text is None:
             continue
 
         summary["n_conflict_attempted"] += 1
 
-        # Generate conflict prompts
+        # Generate conflict prompts with 3 strength levels
         conflict_prompts = make_conflict_prompts(question, original_context, dstar_text)
 
-        # Test each conflict variant; track best outcome PER SAMPLE
+        # Test each conflict variant; track best outcome PER SAMPLE and PER STRENGTH
         sample_success = False
-        sample_best_category = "KC"  # default if no variant changes anything
+        sample_best_category = "KC"
+        sample_best_strength = None
         for variant_label, prompt in conflict_prompts:
             result = evaluate_sample(model, tokenizer, prompt, answers, device)
             result["variant"] = variant_label
@@ -370,18 +428,19 @@ def synthesize_kw_conflict(args):
             if result["category"] == "KW":
                 sample_success = True
                 sample_best_category = "KW"
-                # Build the enriched sample for training
+                strength = variant_label.split("_")[0]  # weak/medium/strong
+                sample_best_strength = strength
+                # Get the template used
+                template_idx = int(variant_label.split("_")[1])
+                template_used = CONFLICT_TEMPLATES_BY_STRENGTH[strength][template_idx]
                 synthetic_kw.append(
                     {
                         "question": question,
                         "answers": answers,
                         "context": original_context,
-                        "conflict_context": (
-                            CONFLICT_FULL_SENTENCE[0].format(dstar=dstar_text)
-                            if "T0" in variant_label
-                            else CONFLICT_FULL_SENTENCE[1].format(dstar=dstar_text)
-                        ),
+                        "conflict_context": template_used.format(dstar=dstar_text),
                         "variant": variant_label,
+                        "strength": strength,
                         "dstar_text": dstar_text,
                         "rank_before": base["rank"],
                         "rank_after": result["rank"],
@@ -397,6 +456,10 @@ def synthesize_kw_conflict(args):
         # Per-sample counting (not per-variant)
         if sample_success:
             summary["n_synthetic_kw"] += 1
+            summary.setdefault("kw_by_strength", {})
+            summary["kw_by_strength"][sample_best_strength] = (
+                summary["kw_by_strength"].get(sample_best_strength, 0) + 1
+            )
         elif sample_best_category == "DK":
             summary["n_conflict_becomes_dk"] += 1
         else:
@@ -445,6 +508,13 @@ def synthesize_kw_conflict(args):
     print(f"\n  Synthesis rate: {synthesis_rate:.1%}")
     print(f"  Gate (synthesis_rate > 0.05): {'✅' if synthesis_rate > 0.05 else '❌'}")
 
+    # Per-strength breakdown
+    if "kw_by_strength" in summary:
+        print(f"\n  KW by template strength:")
+        for strength in ["weak", "medium", "strong"]:
+            n = summary["kw_by_strength"].get(strength, 0)
+            print(f"    {strength}: {n} ({n / max(1, n_synth) * 100:.0f}%)")
+
     # Projection: if n_train=2000 with original KW ratio ~3.5% (~70 natural KW),
     # add synthetic KW from ~60% KC → (2000 * 0.60 * synthesis_rate) extra KW
     projected_natural_kw = 2000 * 0.035  # ~70
@@ -457,6 +527,21 @@ def synthesize_kw_conflict(args):
     # ── Save ────────────────────────────────────────────────────────────────
     OUTPUT_DIR.mkdir(exist_ok=True, parents=True)
     out_path = OUTPUT_DIR / "synthesize_kw_conflict.json"
+
+    # Convert baseline tensors for JSON serialization
+    baseline_json = []
+    for entry in baseline_results:
+        b = entry["base"]
+        baseline_json.append(
+            {
+                "question": entry["sample"]["question"][:80],
+                "category": b["category"],
+                "rank": b["rank"],
+                "delta": b["delta"],
+                "is_correct": b["is_correct"],
+                "generated": b["generated"][:120],
+            }
+        )
 
     output = {
         "config": {
@@ -476,7 +561,7 @@ def synthesize_kw_conflict(args):
             ),
         },
         "synthetic_kw_samples": synthetic_kw,
-        "baseline": baseline_results,
+        "baseline": baseline_json,
     }
 
     with open(out_path, "w") as f:
