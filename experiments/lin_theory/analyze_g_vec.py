@@ -231,6 +231,25 @@ class LogisticRegression:
     def predict(self, X: np.ndarray) -> np.ndarray:
         return (self.predict_proba(X) >= 0.5).astype(int)
 
+    def to_dict(self) -> dict:
+        """Serialise classifier weights for cross-model transfer."""
+        return {
+            "w": self.w.tolist(),
+            "b": float(self.b),
+            "X_mean": self.X_mean.tolist(),
+            "X_std": self.X_std.tolist(),
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "LogisticRegression":
+        """Deserialise classifier from dict."""
+        inst = cls.__new__(cls)
+        inst.w = np.array(d["w"], dtype=np.float64)
+        inst.b = float(d["b"])
+        inst.X_mean = np.array(d["X_mean"], dtype=np.float64)
+        inst.X_std = np.array(d["X_std"], dtype=np.float64)
+        return inst
+
 
 def loocv_auroc(X: np.ndarray, y: np.ndarray, l2: float = 1.0) -> float:
     """Leave-one-out cross-validated AUROC using logistic regression."""
@@ -473,7 +492,65 @@ def analyze_g_vec(args):
                 f"(未={res['delta_vs_full']:+.4f}){marker}"
             )
 
-    # ── Save ────────────────────────────────────────────────────────────────
+    # E. Zero-shot eval with pre-trained classifier (if --classifier_weights given)
+    zero_shot_auroc = None
+    if args.classifier_weights:
+        print(f"\n  Loading classifier from {args.classifier_weights} ...")
+        with open(args.classifier_weights) as f:
+            cdict = json.load(f)
+        clf = LogisticRegression.from_dict(cdict["classifier"])
+        clf_k = cdict["config"]["k"]
+        clf_ref = cdict["config"]["ref_layer"]
+        print(
+            f"    Trained on: {cdict['config']['model']}, "
+            f"k={clf_k}, ref=L{clf_ref}, AUROC={cdict['auroc']['g_vec']:.4f}"
+        )
+        if clf_k != k:
+            print(
+                f"    WARNING: saved k={clf_k} != current k={k}, "
+                "using saved classifier dims"
+            )
+        # Truncate/pad features to match saved classifier
+        n_feats = len(clf.w)
+        if X.shape[1] > n_feats:
+            X_eval = X[:, :n_feats]
+        elif X.shape[1] < n_feats:
+            pad = np.zeros((X.shape[0], n_feats - X.shape[1]), dtype=np.float64)
+            X_eval = np.concatenate([X, pad], axis=1)
+        else:
+            X_eval = X
+        z_probs = clf.predict_proba(X_eval)
+        zero_shot_auroc = _compute_auroc(z_probs, y)
+        print(f"    Zero-shot AUROC (KW vs KC+DK): {zero_shot_auroc:.4f}")
+
+    # F. Save classifier trained on all data (if --save_classifier given)
+    classifier_path = None
+    if args.save_classifier and n_kw >= 3:
+        print(f"\n  Training final classifier on all {len(X)} samples ...")
+        final_clf = LogisticRegression(l2=args.l2)
+        final_clf.fit(X, y)
+        cdict = {
+            "config": {
+                "n_samples": args.n_samples,
+                "k": k,
+                "seed": args.seed,
+                "l2": args.l2,
+                "ref_layer": ref_layer,
+                "last_layer": last_layer,
+                "model": MODEL_PATH,
+            },
+            "classifier": final_clf.to_dict(),
+            "auroc": {
+                "g_vec": float(gvec_auroc),
+                "scalar_delta": float(delta_auroc),
+            },
+        }
+        classifier_path = OUTPUT_DIR / "g_vec_classifier.json"
+        with open(classifier_path, "w") as f:
+            json.dump(cdict, f, indent=2)
+        print(f"    Saved classifier to {classifier_path}")
+
+    # ── Save results JSON ────────────────────────────────────────────────────
     OUTPUT_DIR.mkdir(exist_ok=True, parents=True)
     out_path = OUTPUT_DIR / "g_vec_analysis.json"
     summary = {
@@ -496,6 +573,10 @@ def analyze_g_vec(args):
         "ablation": ablation_results,
         "per_category": cat_stats,
     }
+    if zero_shot_auroc is not None:
+        summary["zero_shot_auroc"] = float(zero_shot_auroc)
+    if classifier_path is not None:
+        summary["classifier_path"] = str(classifier_path)
     with open(out_path, "w") as f:
         json.dump(summary, f, indent=2)
     print(f"\n  Saved to {out_path}")
@@ -537,6 +618,17 @@ def main():
         type=str,
         default=None,
         help="Model path override (required for 8B).",
+    )
+    parser.add_argument(
+        "--save_classifier",
+        action="store_true",
+        help="Train classifier on all data and save weights to disk.",
+    )
+    parser.add_argument(
+        "--classifier_weights",
+        type=str,
+        default=None,
+        help="Path to saved classifier JSON for zero-shot evaluation.",
     )
     args = parser.parse_args()
 
