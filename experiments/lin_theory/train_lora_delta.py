@@ -298,15 +298,59 @@ def get_first_answer_token_id(tokenizer, answers: list[str]) -> int | None:
     return None
 
 
-class TriviaQADataset(Dataset):
-    """Tokenized TriviaQA samples for LoRA training."""
+def _load_synthetic_kw_lookup(synthetic_kw_path: str) -> dict[str, str]:
+    """Load synthetic KW samples JSON → {question: conflict_context} dict.
 
-    def __init__(self, samples: list[dict], tokenizer, max_length: int = 768):
+    The synthesis script saves samples where injecting misleading context turns
+    a KC sample into a KW sample.  We use the conflict context in place of the
+    original search context so the model sees the misleading evidence and
+    generates a wrong answer — creating a trainable KW signal.
+    """
+    with open(synthetic_kw_path) as f:
+        synth = json.load(f)
+    # Handle both formats: list of samples or dict with "synthetic_kw_samples" key
+    if isinstance(synth, dict) and "synthetic_kw_samples" in synth:
+        samples = synth["synthetic_kw_samples"]
+    elif isinstance(synth, list):
+        samples = synth
+    else:
+        raise ValueError(f"Unexpected synthetic KW format in {synthetic_kw_path}")
+    lookup = {}
+    for kw in samples:
+        q = kw["question"].strip()
+        ctx = kw.get("conflict_context", "")
+        if q and ctx:
+            lookup[q] = ctx
+    return lookup
+
+
+class TriviaQADataset(Dataset):
+    """Tokenized TriviaQA samples for LoRA training.
+
+    If synthetic_kw_lookup is provided, samples whose question matches a
+    synthetic KW entry use the conflict_context instead of the original
+    context, turning them into KW training samples.
+    """
+
+    def __init__(
+        self,
+        samples: list[dict],
+        tokenizer,
+        max_length: int = 768,
+        synthetic_kw_lookup: dict[str, str] | None = None,
+    ):
         self.data = []
+        _lookup = synthetic_kw_lookup or {}
+        n_synth_used = 0
         for s in samples:
-            prompt = format_prompt(
-                s["question"], s.get("context", ""), dataset="triviaqa"
-            )
+            question = s["question"].strip()
+            # Use conflict context if this question has a synthetic KW entry
+            if question in _lookup:
+                context = _lookup[question]
+                n_synth_used += 1
+            else:
+                context = s.get("context", "")
+            prompt = format_prompt(question, context, dataset="triviaqa")
             y_true_id = get_first_answer_token_id(tokenizer, s["answers"])
             if y_true_id is None:
                 continue
@@ -327,6 +371,10 @@ class TriviaQADataset(Dataset):
                     "answers": s["answers"],
                     "prompt_len": len(prompt_ids),
                 }
+            )
+        if n_synth_used > 0:
+            print(
+                f"  Synthetic KW: {n_synth_used}/{len(samples)} samples replaced with conflict context"
             )
 
     def __len__(self):
@@ -402,7 +450,17 @@ def train_lora_delta(args):
     # ── 2. Load training data ────────────────────────────────────────────
     print(f"\n[2/6] Loading {args.n_train} TriviaQA train samples...")
     train_samples = load_triviaqa_train(n_samples=args.n_train, seed=args.seed)
-    train_dataset = TriviaQADataset(train_samples, tokenizer)
+    # Load synthetic KW lookup if provided
+    synth_kw_lookup = None
+    synth_kw_path = getattr(args, "synthetic_kw_path", None)
+    if synth_kw_path:
+        synth_kw_lookup = _load_synthetic_kw_lookup(synth_kw_path)
+        print(
+            f"  Loaded {len(synth_kw_lookup)} synthetic KW samples from {synth_kw_path}"
+        )
+    train_dataset = TriviaQADataset(
+        train_samples, tokenizer, synthetic_kw_lookup=synth_kw_lookup
+    )
     print(f"  Valid samples: {len(train_dataset)}/{args.n_train}")
 
     # ── 2.5. Pre-compute v (truth direction) if v·h weighting enabled ──────
@@ -859,6 +917,8 @@ def train_lora_delta(args):
             else None,
             "kc_ce_only": args.kc_ce_only,
             "dk_filter": getattr(args, "dk_filter", False),
+            "synthetic_kw_path": synth_kw_path,
+            "n_synthetic_kw_used": len(synth_kw_lookup) if synth_kw_lookup else 0,
         },
         "train_losses": train_losses,
         "best_loss": best_loss,
@@ -1303,6 +1363,16 @@ def main():
         "--skip_lora",
         action="store_true",
         help="Evaluate baseline only, skip LoRA model loading",
+    )
+    # Synthetic KW (knowledge conflict injection)
+    parser.add_argument(
+        "--synthetic_kw_path",
+        type=str,
+        default=None,
+        help="Path to synthetic KW JSON (from synthesize_kw_conflict.py). "
+        "Training samples whose question matches a synthetic KW entry use "
+        "the conflict_context instead of the original context, turning them "
+        "into KW training samples.",
     )
     # Shared
     parser.add_argument("--seed", type=int, default=42)
