@@ -433,12 +433,20 @@ def synthesize_kw_conflict(args):
                 # Get the template used
                 template_idx = int(variant_label.split("_")[1])
                 template_used = CONFLICT_TEMPLATES_BY_STRENGTH[strength][template_idx]
+                # Build the SAME combined context that was validated by
+                # make_conflict_prompts (misleading + original_context), so
+                # training sees the prompt format that was actually tested.
+                _misleading = template_used.format(dstar=dstar_text)
+                _combined = _misleading
+                if original_context.strip():
+                    _combined = _misleading + " " + original_context.strip()
+
                 synthetic_kw.append(
                     {
                         "question": question,
                         "answers": answers,
                         "context": original_context,
-                        "conflict_context": template_used.format(dstar=dstar_text),
+                        "conflict_context": _combined,
                         "variant": variant_label,
                         "strength": strength,
                         "dstar_text": dstar_text,

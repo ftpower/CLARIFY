@@ -627,7 +627,7 @@ def train_lora_delta(args):
 
             def _make_multi_hook(module, input, output, _layer=li, _cache=cache):
                 hs = output[0] if isinstance(output, tuple) else output
-                _cache["h"] = hs.detach()  # [B, seq, d_model]
+                _cache["h"] = hs  # [B, seq, d_model]; gradients kept for δ penalty
 
             ref_handles.append(layers[li].register_forward_hook(_make_multi_hook))
         print(f"  Multi-ref hooks registered: layers {ref_layers_list}")
@@ -637,7 +637,7 @@ def train_lora_delta(args):
 
         def _capture_single(module, input, output):
             hs = output[0] if isinstance(output, tuple) else output
-            h_ref_caches[layer_early]["h"] = hs.detach()
+            h_ref_caches[layer_early]["h"] = hs  # gradients kept for δ penalty
 
         ref_handles.append(layers[layer_early].register_forward_hook(_capture_single))
 
@@ -712,7 +712,7 @@ def train_lora_delta(args):
             ce_loss = outputs.loss  # scalar, mean over non-masked tokens
 
             # Get L27 logits at last position
-            logits_L27 = outputs.logits.detach()  # [B, seq, vocab]
+            logits_L27 = outputs.logits  # [B, seq, vocab]; gradients kept for δ penalty
 
             # Find the last non-masked position for each sample
             last_positions = []

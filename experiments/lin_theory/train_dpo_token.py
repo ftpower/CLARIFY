@@ -164,7 +164,23 @@ def build_preference_pairs(
         logits = outputs.logits[0, -1, :].float()  # [vocab_size]
         y_l_id = int(logits.argmax().item())
 
+        ref_lp_w = F.log_softmax(logits, dim=-1)[y_true_id].item()  # scalar
+        ref_lp_l = F.log_softmax(logits, dim=-1)[y_l_id].item()
+
+        # Store prompt_ids so DPODataset uses the SAME truncation as reference log-probs
+        stored_ids = input_ids[0].cpu().tolist()
+
         if y_true_id == y_l_id:
+            stats["is_kc"] += 1
+            pair = {
+                "question": s["question"],
+                "context": s.get("context", ""),
+                "y_w_id": y_true_id,
+                "y_l_id": b_id,
+                "ref_lp_w": ref_lp_w,
+                "ref_lp_l": ref_lp_l,
+                "prompt_ids": stored_ids,  # shared truncation via [:1024] above
+            }
             stats["y_w_eq_y_l"] += 1
             continue  # no preference signal (model already outputs correct)
 
@@ -178,7 +194,7 @@ def build_preference_pairs(
                 "question": s["question"],
                 "answers": s["answers"],
                 "context": s.get("context", ""),
-                "prompt": prompt,
+                "prompt_ids": stored_ids,  # shared truncation via [:1024] above
                 "y_w_id": y_true_id,
                 "y_l_id": y_l_id,
                 "ref_lp_w": ref_lp_w,
@@ -198,12 +214,19 @@ class DPODataset(Dataset):
     def __init__(self, pairs: list[dict], tokenizer, max_length: int = 768):
         self.data = []
         for p in pairs:
-            prompt_ids = tokenizer.encode(
-                format_prompt(p["question"], p.get("context", ""), dataset="triviaqa"),
-                add_special_tokens=True,
-            )
-            if len(prompt_ids) > max_length:
-                prompt_ids = prompt_ids[-max_length:]
+            # Use pre-stored prompt_ids (from build_preference_pairs) when available,
+            # so reference log-probs and training prompt share the same truncation.
+            if "prompt_ids" in p and p["prompt_ids"] is not None:
+                prompt_ids = p["prompt_ids"][-max_length:]
+            else:
+                prompt_ids = tokenizer.encode(
+                    format_prompt(
+                        p["question"], p.get("context", ""), dataset="triviaqa"
+                    ),
+                    add_special_tokens=True,
+                )
+                if len(prompt_ids) > max_length:
+                    prompt_ids = prompt_ids[-max_length:]
             self.data.append(
                 {
                     "prompt_ids": torch.tensor(prompt_ids, dtype=torch.long),

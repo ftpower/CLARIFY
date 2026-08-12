@@ -153,11 +153,14 @@ class PrototypeHead(nn.Module):
         self.prototype = nn.Parameter(torch.randn(out_dim) / math.sqrt(out_dim))
 
     def forward(self, delta_h: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return (z_normalised, cosine_sim_to_prototype)."""
+        """Return (z_embedding, similarity_logits).
+
+        NOTE: similarity is unbounded (no F.normalize on z or prototype),
+        so BCEWithLogitsLoss receives proper logits, not cosine-limited values.
+        """
         z = self.net(delta_h.float())
-        z = F.normalize(z, dim=-1)
-        p = F.normalize(self.prototype, dim=-1)
-        sim = (z * p).sum(dim=-1)  # cosine similarity, range [-1, 1]
+        p = self.prototype  # no normalisation — keep logits unbounded
+        sim = (z * p).sum(dim=-1)  # raw dot product, unbounded
         return z, sim
 
 

@@ -212,16 +212,17 @@ def train_adapter(args):
 
     # ── 3.5 Free model, keep only ln_final + unembedding components ──────
     # Model itself (~3.4 GB float16) is no longer needed after h_L20 extraction.
-    # Clone the small components needed for adapter training before freeing.
+    # Keep ln_final as a live module (not cloned params) so training & eval use
+    # the SAME RMSNorm code path, avoiding numerical mismatch.
     print(f"\n[3.5/5] Freeing model, keeping only unembedding components...")
     W_U_weight = W_U.detach().clone()  # [d_model, vocab_size] float16
     b_U_weight = (
         b_U.detach().clone() if b_U is not None else None
     )  # [vocab_size] float16
-    # TransformerLens RMSNorm uses 'w' attribute (not 'weight')
-    ln_w_attr = "w" if hasattr(ln_final, "w") else "weight"
-    ln_weight = getattr(ln_final, ln_w_attr).detach().clone()  # [d_model] float16
-    ln_eps = getattr(ln_final, "eps", 1e-6)
+    # Keep ln_final live — negligible memory (~d_model params) and ensures
+    # training RMSNorm matches eval exactly.
+    ln_final = ln_final.to(device)
+    model_dtype = next(ln_final.parameters()).dtype
     del model  # free ~3.4 GB GPU memory
     gc.collect()
     torch.cuda.empty_cache()
@@ -259,14 +260,11 @@ def train_adapter(args):
             delta = adapter(h_batch)  # [B, d_model]
             h_adapted = h_batch + delta  # residual connection [B, d_model]
 
-            # RMSNorm: h_norm = h * rsqrt(mean(h²) + eps) * weight
-            # Compute in float32 for stability, then cast back for W_U matmul
-            h_f32 = h_adapted.float()
-            rms = torch.sqrt(torch.mean(h_f32**2, dim=-1, keepdim=True) + ln_eps)
-            h_norm_f16 = (h_f32 / rms * ln_weight.float()).to(torch.float16)
+            # Use live ln_final (same code path as eval) for numerical consistency
+            h_norm = ln_final(h_adapted.to(dtype=model_dtype))  # RMSNorm
 
             # Compute logits in float16 (saves 600+ MB vs float32)
-            logits_f16 = h_norm_f16 @ W_U_weight  # [B, vocab_size] float16
+            logits_f16 = h_norm @ W_U_weight  # [B, vocab_size] float16
             if b_U_weight is not None:
                 logits_f16 = logits_f16 + b_U_weight
 
