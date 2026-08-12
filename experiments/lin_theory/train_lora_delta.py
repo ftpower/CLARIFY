@@ -1077,6 +1077,8 @@ def evaluate(args):
             "use_dora",
             "use_rslora",
             "loftq_config",
+            "inference_mode",
+            "peft_type",
         }
         _clean_cfg = {k: v for k, v in _cfg.items() if k in _peft_cfg_fields}
         if _lt is not None:
