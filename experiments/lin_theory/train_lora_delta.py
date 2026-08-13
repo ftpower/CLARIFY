@@ -96,6 +96,23 @@ for _p in [
 
 from src.data_loader import load_triviaqa, format_prompt, check_correct
 
+
+def check_correct_exact(prediction: str, answers: list[str]) -> bool:
+    """Exact match: any answer string (case-insensitive) appears in prediction.
+
+    Conservative — requires the actual answer text to appear verbatim.
+    Primary metric for Phase 24 (fuzzy check_correct has 28% false-positive).
+    """
+    pred_lower = prediction.strip().lower()
+    for ans in answers:
+        ans_lower = ans.strip().lower()
+        if not ans_lower:
+            continue
+        if ans_lower in pred_lower:
+            return True
+    return False
+
+
 # ── Constants ──────────────────────────────────────────────────────────────────
 NUM_DELTA_LAYERS = 8  # Number of late layers to target (last N layers)
 RANK_THRESHOLD = 50
@@ -110,13 +127,17 @@ def _get_delta_layers(model) -> tuple[int, int]:
     return layer_early, layer_late
 
 
-def _get_lora_dir(lambda_delta: float) -> Path:
-    """Lambda-specific LoRA checkpoint directory."""
+def _get_lora_dir(lambda_delta: float, kl_beta: float = 0.0) -> Path:
+    """LoRA checkpoint directory (KL experiment uses kl_beta-aware naming)."""
+    if kl_beta > 0:
+        return OUTPUT_DIR / f"s24_kl{kl_beta}"
     return OUTPUT_DIR / f"s20_1_lambda{lambda_delta}"
 
 
-def _get_results_path(lambda_delta: float) -> Path:
-    """Lambda-specific results JSON path."""
+def _get_results_path(lambda_delta: float, kl_beta: float = 0.0) -> Path:
+    """Results JSON path (KL experiment uses kl_beta-aware naming)."""
+    if kl_beta > 0:
+        return OUTPUT_DIR / f"s24_kl{kl_beta}.json"
     return OUTPUT_DIR / f"s20_1_lambda{lambda_delta}.json"
 
 
@@ -370,6 +391,7 @@ class TriviaQADataset(Dataset):
                     "question": s["question"],
                     "answers": s["answers"],
                     "prompt_len": len(prompt_ids),
+                    "idx": len(self.data),
                 }
             )
         if n_synth_used > 0:
@@ -398,6 +420,7 @@ def collate_lora_batch(batch: list[dict], tokenizer) -> dict:
         "labels": labels,
         "y_true_ids": torch.tensor([b["y_true_id"] for b in batch], dtype=torch.long),
         "prompt_lens": [b["prompt_len"] for b in batch],
+        "idx": torch.tensor([b["idx"] for b in batch], dtype=torch.long),
     }
 
 
@@ -409,8 +432,8 @@ def collate_lora_batch(batch: list[dict], tokenizer) -> dict:
 def train_lora_delta(args):
     """Main training routine: LoRA δ-corrective fine-tuning."""
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    lora_dir = _get_lora_dir(args.lambda_delta)
-    results_path = _get_results_path(args.lambda_delta)
+    lora_dir = _get_lora_dir(args.lambda_delta, getattr(args, "kl_beta", 0.0))
+    results_path = _get_results_path(args.lambda_delta, getattr(args, "kl_beta", 0.0))
     OUTPUT_DIR.mkdir(exist_ok=True, parents=True)
     print(
         f"Phase 20.1: LoRA δ-Corrective Training | n_train={args.n_train} | λ={args.lambda_delta}"
@@ -693,6 +716,7 @@ def train_lora_delta(args):
     for epoch in range(args.epochs):
         epoch_ce = 0.0
         epoch_delta = 0.0
+        epoch_kl = 0.0
         epoch_loss = 0.0
         n_batches = 0
         pbar = tqdm(loader, desc=f"  Epoch {epoch + 1}/{args.epochs}")
@@ -837,7 +861,26 @@ def train_lora_delta(args):
 
                 delta_loss = penalty.mean()
 
-            loss = ce_loss + args.lambda_delta * delta_loss
+            # KL regularization (Direction 1 / Phase 24): windowed anti-forgetting.
+            # KL(P_base || P_lora) summed over the last K token positions
+            # (answer-relevant window), gradient flows only to the LoRA model.
+            kl_loss = torch.tensor(0.0, device=device)
+            if getattr(args, "kl_beta", 0.0) > 0:
+                with model.disable_adapter():
+                    with torch.no_grad():
+                        base_out = model(input_ids=input_ids)
+                base_logits = base_out.logits  # [B, seq, vocab]
+                # Slice to last K positions BEFORE log_softmax to bound memory
+                # (full-sequence log_softmax over [B, seq, vocab] OOMs).
+                K = getattr(args, "kl_window", 128)
+                lora_logp = F.log_softmax(outputs.logits[:, -K:, :].float(), dim=-1)
+                base_logp = F.log_softmax(base_logits[:, -K:, :].float(), dim=-1)
+                # Sum over window positions & vocab, normalize by batch size.
+                kl_loss = (
+                    F.kl_div(lora_logp, base_logp, log_target=True, reduction="sum") / B
+                )
+
+            loss = ce_loss + args.lambda_delta * delta_loss + args.kl_beta * kl_loss
 
             optimizer.zero_grad()
             loss.backward()
@@ -850,6 +893,7 @@ def train_lora_delta(args):
                 if isinstance(delta_loss, torch.Tensor)
                 else delta_loss
             )
+            epoch_kl += kl_loss.item()
             epoch_loss += loss.item()
             n_batches += 1
 
@@ -858,6 +902,7 @@ def train_lora_delta(args):
                     "loss": f"{loss.item():.4f}",
                     "ce": f"{ce_loss.item():.4f}",
                     "delta": f"{delta_loss.item() if hasattr(delta_loss, 'item') else delta_loss:.4f}",
+                    "kl": f"{kl_loss.item():.4f}",
                 }
             )
 
@@ -867,17 +912,20 @@ def train_lora_delta(args):
 
         avg_ce = epoch_ce / max(n_batches, 1)
         avg_delta = epoch_delta / max(n_batches, 1)
+        avg_kl = epoch_kl / max(n_batches, 1)
         avg_loss = epoch_loss / max(n_batches, 1)
         train_losses.append(
             {
                 "epoch": epoch + 1,
                 "ce": avg_ce,
                 "delta": avg_delta,
+                "kl": avg_kl,
                 "total": avg_loss,
             }
         )
         print(
-            f"    Epoch {epoch + 1}: ce={avg_ce:.4f} delta={avg_delta:.4f} total={avg_loss:.4f}"
+            f"    Epoch {epoch + 1}: ce={avg_ce:.4f} delta={avg_delta:.4f} "
+            f"kl={avg_kl:.4f} total={avg_loss:.4f}"
         )
 
         # Save per-epoch checkpoint (for early stopping analysis)
@@ -906,6 +954,7 @@ def train_lora_delta(args):
             "batch_size": args.batch_size,
             "epochs": args.epochs,
             "lambda_delta": args.lambda_delta,
+            "kl_beta": getattr(args, "kl_beta", 0.0),
             "margin": args.margin,
             "model_path": MODEL_PATH,
             "multi_ref": use_multi_ref,
@@ -939,10 +988,17 @@ def train_lora_delta(args):
 
 
 def classify_sample(
-    logits: torch.Tensor, y_true_id: int | None, generated: str, answers: list[str]
+    logits: torch.Tensor,
+    y_true_id: int | None,
+    generated: str,
+    answers: list[str],
+    exact: bool = False,
 ) -> str:
     """KC/KW/DK classification."""
-    is_correct = check_correct(generated, answers, dataset="triviaqa")
+    if exact:
+        is_correct = check_correct_exact(generated, answers)
+    else:
+        is_correct = check_correct(generated, answers, dataset="triviaqa")
     if is_correct:
         return "KC"
     if y_true_id is None:
@@ -989,12 +1045,13 @@ def evaluate(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # Allow caller to override model path (e.g., train_contrastive.py)
     _MODEL_PATH = getattr(args, "model_path", None) or MODEL_PATH
+    _kl_beta = getattr(args, "kl_beta", 0.0)
     lora_dir = (
         Path(args.lora_checkpoint)
         if getattr(args, "lora_checkpoint", None)
-        else _get_lora_dir(getattr(args, "lambda_delta", 0.1))
+        else _get_lora_dir(getattr(args, "lambda_delta", 0.1), _kl_beta)
     )
-    results_path = _get_results_path(getattr(args, "lambda_delta", 0.1))
+    results_path = _get_results_path(getattr(args, "lambda_delta", 0.1), _kl_beta)
     print(
         f"Phase 20.1: LoRA δ-Corrective Evaluation | n_test={args.n_test} | λ={getattr(args, 'lambda_delta', 0.1)}"
     )
@@ -1026,8 +1083,13 @@ def evaluate(args):
         )
         y_true_id = get_first_answer_token_id(tokenizer, s["answers"])
         ft_correct = y_true_id is not None and ft_id == y_true_id
-        em_correct = check_correct(full_text, s["answers"], dataset="triviaqa")
-        category = classify_sample(logits, y_true_id, full_text, s["answers"])
+        em_correct = check_correct_exact(full_text, s["answers"])  # exact (primary)
+        em_fuzzy = check_correct(
+            full_text, s["answers"], dataset="triviaqa"
+        )  # reference
+        category = classify_sample(
+            logits, y_true_id, full_text, s["answers"], exact=True
+        )
         bl_results.append(
             {
                 "question": s["question"],
@@ -1036,6 +1098,7 @@ def evaluate(args):
                 "ft_id": ft_id,
                 "ft_correct": ft_correct,
                 "em_correct": em_correct,
+                "em_fuzzy": em_fuzzy,
                 "full_text": full_text,
                 "category": category,
             }
@@ -1096,8 +1159,13 @@ def evaluate(args):
             )
             y_true_id = get_first_answer_token_id(tokenizer, s["answers"])
             ft_correct = y_true_id is not None and ft_id == y_true_id
-            em_correct = check_correct(full_text, s["answers"], dataset="triviaqa")
-            category = classify_sample(logits, y_true_id, full_text, s["answers"])
+            em_correct = check_correct_exact(full_text, s["answers"])  # exact (primary)
+            em_fuzzy = check_correct(
+                full_text, s["answers"], dataset="triviaqa"
+            )  # reference
+            category = classify_sample(
+                logits, y_true_id, full_text, s["answers"], exact=True
+            )
             lora_results.append(
                 {
                     "question": s["question"],
@@ -1106,6 +1174,7 @@ def evaluate(args):
                     "ft_id": ft_id,
                     "ft_correct": ft_correct,
                     "em_correct": em_correct,
+                    "em_fuzzy": em_fuzzy,
                     "full_text": full_text,
                     "category": category,
                 }
@@ -1123,6 +1192,8 @@ def evaluate(args):
     lo_em = sum(1 for r in lora_results if r["em_correct"])
     bl_ft = sum(1 for r in bl_results if r["ft_correct"])
     lo_ft = sum(1 for r in lora_results if r["ft_correct"])
+    bl_em_fuzzy = sum(1 for r in bl_results if r["em_fuzzy"])
+    lo_em_fuzzy = sum(1 for r in lora_results if r["em_fuzzy"])
 
     # Per-category
     categories = ["KC", "KW", "DK"]
@@ -1173,6 +1244,8 @@ def evaluate(args):
             "baseline_em_accuracy": bl_em / n,
             "lora_em_accuracy": lo_em / n,
             "em_delta": (lo_em - bl_em) / n,
+            "baseline_em_fuzzy": bl_em_fuzzy / n,
+            "lora_em_fuzzy": lo_em_fuzzy / n,
             "baseline_ft_accuracy": bl_ft / n,
             "lora_ft_accuracy": lo_ft / n,
             "ft_delta": (lo_ft - bl_ft) / n,
@@ -1207,6 +1280,7 @@ def evaluate(args):
             "baseline": {
                 "ft_correct": bl_results[i]["ft_correct"],
                 "em_correct": bl_results[i]["em_correct"],
+                "em_fuzzy": bl_results[i]["em_fuzzy"],
                 "full_text": bl_results[i]["full_text"],
             },
         }
@@ -1214,6 +1288,7 @@ def evaluate(args):
             sample["lora"] = {
                 "ft_correct": lora_results[i]["ft_correct"],
                 "em_correct": lora_results[i]["em_correct"],
+                "em_fuzzy": lora_results[i]["em_fuzzy"],
                 "full_text": lora_results[i]["full_text"],
             }
         results["per_sample"].append(sample)
@@ -1228,6 +1303,10 @@ def evaluate(args):
     if has_lora:
         print(f"    LoRA:     {lo_em}/{n} = {lo_em / n:.1%}")
         print(f"    Delta:    {(lo_em - bl_em) / n:+.1%}")
+    print(f"\n  Fuzzy-match accuracy (reference):")
+    print(f"    Baseline: {bl_em_fuzzy}/{n} = {bl_em_fuzzy / n:.1%}")
+    if has_lora:
+        print(f"    LoRA:     {lo_em_fuzzy}/{n} = {lo_em_fuzzy / n:.1%}")
     print(f"\n  First-token accuracy:")
     print(f"    Baseline: {bl_ft}/{n} = {bl_ft / n:.1%}")
     if has_lora:
@@ -1281,6 +1360,20 @@ def main():
     parser.add_argument("--lora_r", type=int, default=8)
     parser.add_argument("--lora_alpha", type=int, default=16)
     parser.add_argument("--lambda_delta", type=float, default=0.1)
+    parser.add_argument(
+        "--kl_beta",
+        type=float,
+        default=0.0,
+        help="KL regularization weight: L = CE + kl_beta·KL(P_base||P_lora). "
+        "0 = pure CE (original behavior). Direction 1 in phase24 plan.",
+    )
+    parser.add_argument(
+        "--kl_window",
+        type=int,
+        default=128,
+        help="Number of last token positions over which KL is computed. "
+        "Full-sequence KL OOMs; window captures the answer-relevant region.",
+    )
     parser.add_argument(
         "--lambda_values",
         type=str,
