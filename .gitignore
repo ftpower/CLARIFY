@@ -8,7 +8,12 @@ experiments/phase1/outputs/
 experiments/phase1/outputs_*/
 进度与问题/
 思路与灵感/
-docs/
+docs/*
+!docs/project-state.md
+!docs/plans/
+!docs/plans/current.md
+!docs/dsh-usage-guide.md
+!docs/dsh-gap-checklist.md
 __pycache__/
 *.pyc
 *.log

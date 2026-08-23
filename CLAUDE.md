@@ -4,21 +4,29 @@
 
 ## Session Start
 
-1. Invoke `using-superpowers` skill first — enables auto-trigger for all Superpowers workflow skills
-2. Read the latest plan in `~/.claude/plans/CLARIFY/` for current priorities and next steps
-3. Full project context is in `.claude/projects/-home-user-ft-Git-Repository-CLARIFY/memory/MEMORY.md`
+按当前 harness 选择入口：
+
+- **Claude Code**：Invoke `using-superpowers` skill first — enables auto-trigger for all Superpowers workflow skills
+- **dsh**：运行 `/session-start` skill（读取并汇报状态与计划）
+
+无论哪个 harness，状态单一事实源在：
+- `docs/project-state.md`（当前阶段、核心指标、已完成、关键结论、下一步）
+- `docs/plans/current.md`（优先级、行动清单、依赖）
+- `~/.claude/plans/CLARIFY/` 与 memory/ 保留为**只读归档**
 
 ## Session End（用户说"退出"/"quit"/"结束了"等）
 
 在结束会话前，必须逐项检查并同步：
 
-1. **今日进度**：哪些完成了、哪些失败、哪些待定 — 更新到对应 plan 文件
-2. **关键结论**：新的实验数据、gate 结果、机制发现 — 更新到 `memory/` 对应文件
-3. **下一步计划**：下午/明天要做什么，依赖和优先级 — 更新 plan 的行动清单
+1. **今日进度**：哪些完成了、哪些失败、哪些待定 — 更新 `docs/plans/current.md` 行动清单
+2. **关键结论**：新的实验数据、gate 结果、机制发现 — 更新到 `docs/project-state.md`
+3. **下一步计划**：下午/明天要做什么，依赖和优先级 — 更新 `docs/plans/current.md`
 4. **未 push 的 commit**：提醒用户 `git push`
 5. **报告给用户**：简洁列出同步了哪些文件
 
-**原则**：下次会话能从 plan + memory 立即恢复状态，不依赖聊天记录。
+> dsh 会话直接用 `/session-end` skill 完成以上全部步骤。
+
+**原则**：下次会话能从 `docs/project-state.md` + `docs/plans/current.md` 立即恢复状态，不依赖聊天记录。
 
 ## Environment
 
