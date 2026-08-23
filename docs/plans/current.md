@@ -3,6 +3,15 @@
 > 每次会话开始/结束读写本文件。归档计划在 `docs/phase*.md`，不在此列。
 > 最后更新：2026-08-23
 
+## 今日进度（2026-08-23）
+
+**工具层（非实验）**：建立了 dsh 工作流脚手架并 commit（`f419bb5`）——AGENTS.md、18 个技能、单一事实源 `project-state.md`、使用说明、缺口清单。dsh 可作为 CC 的并行 harness 使用，但**论文主线实验未动**。
+
+**dsh 相关待办（不阻塞论文，有空再做）**：
+- [ ] 报上游 TDZ bug（dsh-claude-move `index.mjs:450`，本地已补丁，`pnpm update` 会还原）
+- [ ] 装 context7 替代（oh-my-dsh / dsh-plugin-mcp）——写论文查文档要用
+- [ ] 用 dsh 实测一个 CLARIFY 任务，对比 CC 的质量/速度/成本，再决定是否主力切换
+
 ## 当前优先级
 
 1. **Phase 24 → Phase 25：从 KL tradeoff 设计里找干预闭环**（最高优先，干预是论文命门）

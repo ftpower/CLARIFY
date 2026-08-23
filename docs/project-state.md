@@ -58,3 +58,4 @@ LLM 幻觉检测 + 干预的完整闭环，用于硕士毕业论文。检测已�
 - 各阶段 plan 归档：`docs/phase*.md`
 - 技能参考：`docs/skills-reference.md`
 - 论文：`docs/thesis/`
+- dsh 工作流（工具层，2026-08-23 建立）：`AGENTS.md`、`docs/dsh-usage-guide.md`、`docs/dsh-gap-checklist.md`（论文主线实验不受影响）
