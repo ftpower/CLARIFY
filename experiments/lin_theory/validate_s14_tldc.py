@@ -44,7 +44,7 @@ for _p in [
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from src.data_loader import load_triviaqa, format_prompt, check_correct
+from src.data_loader import load_triviaqa, format_prompt, check_correct_exact
 from common import (
     load_model_and_unembed,
     get_first_answer_token_id,
@@ -59,9 +59,17 @@ from common import (
 
 
 def get_y_true_rank(logits, y_true_id):
-    """Rank 0 = highest probability."""
-    sorted_ids = logits[0, -1, :].float().argsort(descending=True)
-    rank = (sorted_ids == y_true_id).nonzero(as_tuple=True)[0].item()
+    """Rank 1 = highest probability (1-indexed, top-50 = ranks 1..50).
+
+    code-review-2026-08-24 Medium 5: was 0-indexed, so `rank <= 50` included
+    the top-51. Now consistent with train_lora_delta.classify_sample.
+    Also flattens to 1-D so the nonzero()[0] index is the rank position
+    (fixes a historical bug where 2-D input made every rank collapse to 1).
+    """
+    row = logits[0, -1, :].float() if logits.dim() > 1 else logits.float()
+    row = row.reshape(-1)
+    sorted_ids = row.argsort(descending=True)
+    rank = (sorted_ids == y_true_id).nonzero(as_tuple=True)[0].item() + 1
     return rank
 
 
@@ -120,7 +128,7 @@ def tldc_greedy_generate(
     """
     tokens = model.to_tokens(prompt, prepend_bos=True)
     if tokens.shape[1] > 1024:
-        tokens = tokens[:, :1024]
+        tokens = tokens[:, -1024:]  # keep TAIL (Question) — see code review Critical 1
 
     hook_early = f"blocks.{layer_early}.hook_resid_post"
 
@@ -260,7 +268,7 @@ def main():
         )
         rank = get_y_true_rank(logits, y_true_id)
         gen_text = greedy_generate(model, tokenizer, prompt, device)
-        is_correct = check_correct(gen_text, sample["answers"], dataset="triviaqa")
+        is_correct = check_correct_exact(gen_text, sample["answers"])  # exact (High 3)
 
         if rank <= args.rank_threshold:
             subset = "know_correct" if is_correct else "know_wrong"
@@ -311,7 +319,7 @@ def main():
         # Get hidden states at both layers in one forward pass
         tokens = model.to_tokens(prompt, prepend_bos=True)
         if tokens.shape[1] > 1024:
-            tokens = tokens[:, :1024]
+            tokens = tokens[:, -1024:]  # keep TAIL (Question) — see code review Critical 1
 
         captured = {}
 
@@ -338,8 +346,10 @@ def main():
         l_early = compute_early_exit_logits(h_early, ln_final, W_U, b_U)
         l_final_exit = compute_early_exit_logits(h_final, ln_final, W_U, b_U)
 
-        rank_early = get_y_true_rank(l_early.unsqueeze(1), y_true_id)
-        rank_final = get_y_true_rank(l_final_exit.unsqueeze(1), y_true_id)
+        # l_early / l_final_exit are [1, 1, vocab]; get_y_true_rank slices
+        # [0, -1, :] internally — do NOT unsqueeze (historical 2-D bug)
+        rank_early = get_y_true_rank(l_early, y_true_id)
+        rank_final = get_y_true_rank(l_final_exit, y_true_id)
 
         if rank_early < rank_final:
             d2_results["early_better"] += 1
@@ -404,7 +414,7 @@ def main():
                 ln_final,
                 beta,
             )
-            is_correct = check_correct(gen_text, e["answers"], dataset="triviaqa")
+            is_correct = check_correct_exact(gen_text, e["answers"])  # exact (High 3)
 
             if is_correct:
                 correct_by_subset[subset] += 1

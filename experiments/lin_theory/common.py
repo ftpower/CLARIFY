@@ -22,7 +22,12 @@ for _p in [
         sys.path.insert(0, _p)
 
 from src.model_loader import load_model
-from src.data_loader import load_triviaqa, format_prompt, check_correct
+from src.data_loader import (
+    load_triviaqa,
+    format_prompt,
+    check_correct,
+    check_correct_exact,
+)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -50,7 +55,7 @@ def compute_v(model, tokenizer, n_calibrate, device, layer, seed=42):
 
     Reuses the exact algorithm from D_intervention_lean.py:
       1. Generate answers for calibration samples
-      2. Label correct/wrong via check_correct
+      2. Label correct/wrong via check_correct_exact
       3. Extract hidden state at given layer (last token position)
       4. v = mean(h_correct) - mean(h_incorrect), L2-normalized
 
@@ -76,7 +81,7 @@ def compute_v(model, tokenizer, n_calibrate, device, layer, seed=42):
         prompt = format_prompt(s["question"], s["context"], dataset="triviaqa")
         tokens = model.to_tokens(prompt, prepend_bos=True)
         if tokens.shape[1] > 1024:
-            tokens = tokens[:, :1024]
+            tokens = tokens[:, -1024:]  # keep TAIL (Question) — see code review Critical 1
 
         residual = {}
 
@@ -99,7 +104,7 @@ def compute_v(model, tokenizer, n_calibrate, device, layer, seed=42):
             gids.append(nid)
 
         ans = tokenizer.decode(gids).strip()
-        is_correct = check_correct(ans, s["answers"], dataset="triviaqa")
+        is_correct = check_correct_exact(ans, s["answers"])
 
         h_vec = residual["h"].float().cpu().numpy().flatten()
         if is_correct:
@@ -250,7 +255,7 @@ def greedy_generate(
     """
     tokens = model.to_tokens(prompt, prepend_bos=True)
     if tokens.shape[1] > 1024:
-        tokens = tokens[:, :1024]
+        tokens = tokens[:, -1024:]  # keep TAIL (Question) — see code review Critical 1
 
     hooks = fwd_hooks if fwd_hooks else []
 
@@ -294,7 +299,7 @@ def extract_h_at_layer(model, tokenizer, prompt, device, layer):
     """
     tokens = model.to_tokens(prompt, prepend_bos=True)
     if tokens.shape[1] > 1024:
-        tokens = tokens[:, :1024]
+        tokens = tokens[:, -1024:]  # keep TAIL (Question) — see code review Critical 1
     last_pos = tokens.shape[1] - 1
 
     residual = {}

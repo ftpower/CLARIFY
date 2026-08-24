@@ -23,6 +23,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from sklearn.metrics import roc_auc_score
+from sklearn.model_selection import StratifiedKFold
 from tqdm import tqdm
 
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
@@ -40,7 +41,7 @@ for _p in [
         sys.path.insert(0, _p)
 
 from src.model_loader import load_model
-from src.data_loader import load_triviaqa, format_prompt, check_correct
+from src.data_loader import load_triviaqa, format_prompt, check_correct_exact
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -67,7 +68,7 @@ def extract_all_states(model, samples, device, layers=None):
 
         tokens = model.to_tokens(prompt, prepend_bos=True)
         if tokens.shape[1] > 1024:
-            tokens = tokens[:, :1024]
+            tokens = tokens[:, -1024:]  # keep TAIL (Question) — see code review Critical 1
         input_len = tokens.shape[1]
 
         # Capture h/a/m at all requested layers + generate
@@ -107,7 +108,7 @@ def extract_all_states(model, samples, device, layers=None):
                 logits = model(current_tokens)
 
         generated = model.tokenizer.decode(gids).strip()
-        is_correct = check_correct(generated, answers, dataset="triviaqa")
+        is_correct = check_correct_exact(generated, answers)  # exact label (High 3)
 
         # Also capture a, m states (need separate forward passes for each layer group)
         # For efficiency, capture h only in main pass; a, m in batched passes
@@ -143,7 +144,7 @@ def extract_attention_mlp_states(model, records, layers, device):
         prompt = format_prompt(question, "", dataset="triviaqa")
         tokens = model.to_tokens(prompt, prepend_bos=True)
         if tokens.shape[1] > 1024:
-            tokens = tokens[:, :1024]
+            tokens = tokens[:, -1024:]  # keep TAIL (Question) — see code review Critical 1
         input_len = tokens.shape[1]
 
         rec["a"] = {}
@@ -182,50 +183,69 @@ def extract_attention_mlp_states(model, records, layers, device):
 
 
 def compute_truth_auroc(records, layers, state_key="h"):
-    """Compute AUROC using truth direction dot product.
+    """Compute AUROC using truth direction dot product, 5-fold stratified CV.
 
-    Uses leave-one-out-ish approach: for each layer, compute v from all records,
-    then dot with each record's vector.
+    (code-review-2026-08-24 Critical 2: the old "leave-one-out-ish" docstring
+    was wrong — v was fit on ALL records and scored on the SAME records.
+    Now v is fit on train folds only, scored on the held-out fold, and the
+    reported AUROC is the fold mean with no max(auroc, 1-auroc) sign flip.)
     """
     aurocs = {}
+    auroc_stds = {}
     directions = {}
 
     for lyr in tqdm(layers, desc=f"  Truth AUROC {state_key}"):
-        correct_vecs = []
-        wrong_vecs = []
+        X = []
+        y = []
         for rec in records:
             vec = np.array(rec[state_key][str(lyr)], dtype=np.float32)
-            if rec["label"] == 1:
-                correct_vecs.append(vec)
-            else:
-                wrong_vecs.append(vec)
+            X.append(vec)
+            y.append(rec["label"])
+        X = np.stack(X)
+        y = np.array(y)
 
-        if not correct_vecs or not wrong_vecs:
+        if (y == 1).sum() == 0 or (y == 0).sum() == 0:
             aurocs[lyr] = 0.5
-            directions[lyr] = np.zeros(
-                len(correct_vecs[0]) if correct_vecs else len(wrong_vecs[0])
-            )
+            auroc_stds[lyr] = 0.0
+            directions[lyr] = np.zeros(X.shape[1])
             continue
 
-        mu_c = np.mean(correct_vecs, axis=0)
-        mu_w = np.mean(wrong_vecs, axis=0)
+        # Intervention direction: fit on all records. Used ONLY for the cascade
+        # intervention (applying a direction learned on the data is standard);
+        # it is not used for the reported detection AUROC.
+        mu_c = X[y == 1].mean(axis=0)
+        mu_w = X[y == 0].mean(axis=0)
         v = mu_c - mu_w
         v = v / (np.linalg.norm(v) + 1e-8)
         directions[lyr] = v
 
-        scores = []
-        labels = []
-        for rec in records:
-            vec = np.array(rec[state_key][str(lyr)], dtype=np.float32)
-            scores.append(float(np.dot(vec, v)))
-            labels.append(rec["label"])
+        skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=0)
+        fold_aurocs = []
+        for tr_idx, te_idx in skf.split(X, y):
+            X_tr, y_tr = X[tr_idx], y[tr_idx]
+            X_te, y_te = X[te_idx], y[te_idx]
+            m_c = y_tr == 1
+            m_i = y_tr == 0
+            if m_c.sum() == 0 or m_i.sum() == 0:
+                continue
+            v_fold = X_tr[m_c].mean(axis=0) - X_tr[m_i].mean(axis=0)
+            v_norm = np.linalg.norm(v_fold)
+            if v_norm <= 1e-8:
+                continue
+            v_fold = v_fold / v_norm
+            scores = X_te @ v_fold
+            if y_te.std() == 0:
+                continue
+            fold_aurocs.append(float(roc_auc_score(y_te, scores)))
 
-        try:
-            aurocs[lyr] = float(roc_auc_score(labels, scores))
-        except ValueError:
+        if fold_aurocs:
+            aurocs[lyr] = float(np.mean(fold_aurocs))
+            auroc_stds[lyr] = float(np.std(fold_aurocs))
+        else:
             aurocs[lyr] = 0.5
+            auroc_stds[lyr] = 0.0
 
-    return aurocs, directions
+    return aurocs, auroc_stds, directions
 
 
 # ═══════════════════════════════════════════════════════════════════
@@ -317,9 +337,9 @@ def evaluate_cascade(
         prompt = format_prompt(question, context, dataset="triviaqa")
         tokens = model.to_tokens(prompt, prepend_bos=True)
         if tokens.shape[1] > 1024:
-            tokens = tokens[:, :1024]
+            tokens = tokens[:, -1024:]  # keep TAIL (Question) — see code review Critical 1
         generated = _gen_greedy(model, tokenizer, tokens, device, hooks)
-        if check_correct(generated, answers, dataset="triviaqa"):
+        if check_correct_exact(generated, answers):  # exact label (High 3)
             correct += 1
 
     return correct / len(test_records)
@@ -432,9 +452,12 @@ def main():
     print("\n[4/5] Computing detection AUROC...")
 
     # h-state AUROC (Phase 7)
-    h_aurocs, h_directions = compute_truth_auroc(train_records, all_layers, "h")
+    h_aurocs, h_std, h_directions = compute_truth_auroc(train_records, all_layers, "h")
     best_h_layer = max(h_aurocs, key=h_aurocs.get)
-    print(f"  h-state AUROC: best L{best_h_layer} = {h_aurocs[best_h_layer]:.4f}")
+    print(
+        f"  h-state AUROC: best L{best_h_layer} = {h_aurocs[best_h_layer]:.4f} "
+        f"±{h_std[best_h_layer]:.4f} (5-fold CV)"
+    )
     print(f"  Top-5 h layers: {sorted(h_aurocs, key=h_aurocs.get, reverse=True)[:5]}")
 
     # Attention and MLP states (Phase 9)
@@ -448,8 +471,8 @@ def main():
             model, train_records, top_h_layers, device
         )
 
-        a_aurocs, a_directions = compute_truth_auroc(train_records, top_h_layers, "a")
-        m_aurocs, m_directions = compute_truth_auroc(train_records, top_h_layers, "m")
+        a_aurocs, a_std, a_directions = compute_truth_auroc(train_records, top_h_layers, "a")
+        m_aurocs, m_std, m_directions = compute_truth_auroc(train_records, top_h_layers, "m")
 
         if a_aurocs:
             best_a = max(a_aurocs, key=a_aurocs.get)
@@ -460,7 +483,6 @@ def main():
     else:
         a_aurocs, a_directions = {}, {}
         m_aurocs, m_directions = {}, {}
-
     # ── 5. Cascade Intervention ───────────────────────────────
     if args.skip_cascade:
         print("\n[5/5] Skipping cascade intervention (--skip_cascade)")
@@ -477,9 +499,9 @@ def main():
             prompt = format_prompt(question, context, dataset="triviaqa")
             tokens = model.to_tokens(prompt, prepend_bos=True)
             if tokens.shape[1] > 1024:
-                tokens = tokens[:, :1024]
+                tokens = tokens[:, -1024:]  # keep TAIL (Question) — see code review Critical 1
             generated = _gen_greedy(model, tokenizer, tokens, device, [])
-            if check_correct(generated, answers, dataset="triviaqa"):
+            if check_correct_exact(generated, answers):  # exact label (High 3)
                 baseline_correct += 1
         baseline_rate = baseline_correct / n_test
         print(f"  Baseline: {baseline_correct}/{n_test} = {baseline_rate:.1%}")
@@ -534,7 +556,7 @@ def main():
     print("\n" + "=" * 60)
     print("8B RESULTS SUMMARY")
     print("=" * 60)
-    print(f"  Detection (h): L{best_h_layer} AUROC={h_aurocs[best_h_layer]:.4f}")
+    print(f"  Detection (h): L{best_h_layer} AUROC={h_aurocs[best_h_layer]:.4f} ±{h_std[best_h_layer]:.4f} (5-fold CV)")
     if not args.skip_cascade:
         print(f"  Cascade baseline: {baseline_rate:.1%}")
         print(f"  Cascade best: {best_overall_config} @ {best_overall_rate:.1%}")
@@ -550,9 +572,12 @@ def main():
             "alphas": args.alphas,
         },
         "detection": {
+            "eval_protocol": "5-fold stratified CV, exact labels, tail-truncated prompts",
             "h_best_layer": best_h_layer,
             "h_best_auroc": h_aurocs[best_h_layer],
+            "h_best_auroc_std": h_std[best_h_layer],
             "h_aurocs": {str(k): v for k, v in h_aurocs.items()},
+            "h_aurocs_std": {str(k): v for k, v in h_std.items()},
             "a_aurocs": {str(k): v for k, v in a_aurocs.items()} if a_aurocs else {},
             "m_aurocs": {str(k): v for k, v in m_aurocs.items()} if m_aurocs else {},
         },

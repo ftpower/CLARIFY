@@ -41,6 +41,8 @@ for _p in [
         sys.path.insert(0, _p)
 
 from shared import load_model_and_data, evaluate_auroc
+from src.data_loader import format_prompt, check_correct_exact
+from sklearn.model_selection import StratifiedKFold
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -52,13 +54,13 @@ def extract_hidden_at_layer(model, tokenizer, prompt: str, device: str,
     """Extract residual stream at specified layer, last token position."""
     tokens = model.to_tokens(prompt, prepend_bos=True)
     if tokens.shape[1] > 1024:
-        tokens = tokens[:, :1024]
+        tokens = tokens[:, -1024:]  # keep TAIL (Question) — see code review Critical 1
 
     residual = {}
 
     def _hook(act, hook=None, **kwargs):
         residual["h"] = act[:, -1, :].detach()
-    return _hook
+        return act
 
     fwd_hooks = [(f"blocks.{layer}.hook_resid_post", _hook)]
 
@@ -119,7 +121,6 @@ def main():
     )
     print(f"  Loaded in {time.time()-t0:.0f}s")
 
-    from src.data_loader import format_prompt, check_correct
     n_layers = model.cfg.n_layers
 
     # Resolve layers to scan
@@ -148,7 +149,7 @@ def main():
         prompt = format_prompt(s["question"], s["context"], dataset="triviaqa")
         tokens = model.to_tokens(prompt, prepend_bos=True)
         if tokens.shape[1] > 1024:
-            tokens = tokens[:, :1024]
+            tokens = tokens[:, -1024:]  # keep TAIL (Question) — see code review Critical 1
 
         # ── First forward pass: extract HS from ALL target layers + get first token ──
         residual = {}
@@ -182,7 +183,7 @@ def main():
             gids.append(nid)
 
         ans = tokenizer.decode(gids).strip()
-        is_correct = check_correct(ans, s["answers"], dataset="triviaqa")
+        is_correct = check_correct_exact(ans, s["answers"])  # exact label (High 3)
         if is_correct:
             correct_count += 1
         labels.append(1 if is_correct else 0)
@@ -191,10 +192,13 @@ def main():
     print(f"  Correct: {correct_count}/{len(samples)} ({correct_count/len(samples):.1%})")
     print(f"  Time: {time.time()-t0:.1f}s")
 
-    # ── Per-layer: compute truth direction + project ──
-    print(f"\nAUROC per layer (truth direction projection):")
-    print(f"  {'Layer':>6s}  {'AUROC':>8s}  {'v_norm':>8s}")
-    print(f"  {'─'*28}")
+    # ── Per-layer: truth direction via 5-fold CV ──
+    # (code-review-2026-08-24 Critical 2: in-sample AUROC + max(auroc,1-auroc)
+    #  double-dips the data. v is now fit on train folds ONLY and scored on the
+    #  held-out fold; the sign of v is fixed by the train fold, so no flipping.)
+    print(f"\nAUROC per layer (truth direction projection, 5-fold CV):")
+    print(f"  {'Layer':>6s}  {'AUROC±std':>12s}  {'v_norm':>8s}")
+    print(f"  {'─'*34}")
 
     best_layer, best_auroc = -1, 0.0
     layer_results = []
@@ -204,29 +208,48 @@ def main():
         mask_correct = labels == 1
         mask_incorrect = labels == 0
 
-        if mask_correct.sum() < 2 or mask_incorrect.sum() < 2:
+        # Need enough samples of both classes for meaningful 5-fold CV
+        if mask_correct.sum() < 5 or mask_incorrect.sum() < 5:
             continue
 
-        v = compute_truth_direction(H[mask_correct], H[mask_incorrect])
-        scores = project_onto_direction(H, v)
+        skf = StratifiedKFold(n_splits=5, shuffle=True, random_state=0)
+        fold_aurocs = []
+        for tr_idx, te_idx in skf.split(H, labels):
+            H_tr, y_tr = H[tr_idx], labels[tr_idx]
+            H_te, y_te = H[te_idx], labels[te_idx]
+            m_c = y_tr == 1
+            m_i = y_tr == 0
+            if m_c.sum() == 0 or m_i.sum() == 0:
+                continue
+            v = compute_truth_direction(H_tr[m_c], H_tr[m_i])
+            scores = project_onto_direction(H_te, v)
+            valid = np.isfinite(scores)
+            if valid.sum() < 3 or y_te[valid].std() == 0:
+                continue
+            fold_aurocs.append(float(roc_auc_score(y_te[valid], scores[valid])))
 
-        valid = np.isfinite(scores)
-        if valid.sum() < 10 or labels[valid].std() == 0:
+        if not fold_aurocs:
             continue
 
-        auroc = float(roc_auc_score(labels[valid], scores[valid]))
-        auroc = max(auroc, 1 - auroc)
-        v_norm = np.linalg.norm(v)
+        auroc = float(np.mean(fold_aurocs))
+        auroc_std = float(np.std(fold_aurocs))
+        v_norm = float(np.linalg.norm(compute_truth_direction(H[mask_correct], H[mask_incorrect])))
 
-        print(f"  {li:>6d}  {auroc:>8.4f}  {v_norm:>8.4f}")
+        print(f"  {li:>6d}  {auroc:>8.4f}±{auroc_std:.4f}  {v_norm:>8.4f}")
 
-        layer_results.append({"layer": li, "auroc": auroc, "v_norm": float(v_norm)})
+        layer_results.append({
+            "layer": li,
+            "auroc": auroc,
+            "auroc_std": auroc_std,
+            "fold_aurocs": fold_aurocs,
+            "v_norm": v_norm,
+        })
 
         if auroc > best_auroc:
             best_auroc = auroc
             best_layer = li
 
-    print(f"\n  Best: Layer {best_layer}, AUROC={best_auroc:.4f}")
+    print(f"\n  Best: Layer {best_layer}, AUROC={best_auroc:.4f} (5-fold CV)")
     print(f"  Baseline max_p = 0.652 (1.7B)")
 
     # Save
@@ -238,6 +261,7 @@ def main():
             "per_layer": sorted(layer_results, key=lambda x: x["auroc"], reverse=True),
             "n_samples": len(labels),
             "n_correct": int(labels.sum()),
+            "eval_protocol": "5-fold stratified CV, exact labels, tail-truncated prompts",
         }, f, indent=2)
     print(f"  Saved: {save_path}")
 

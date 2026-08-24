@@ -94,23 +94,12 @@ for _p in [
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from src.data_loader import load_triviaqa, format_prompt, check_correct
-
-
-def check_correct_exact(prediction: str, answers: list[str]) -> bool:
-    """Exact match: any answer string (case-insensitive) appears in prediction.
-
-    Conservative — requires the actual answer text to appear verbatim.
-    Primary metric for Phase 24 (fuzzy check_correct has 28% false-positive).
-    """
-    pred_lower = prediction.strip().lower()
-    for ans in answers:
-        ans_lower = ans.strip().lower()
-        if not ans_lower:
-            continue
-        if ans_lower in pred_lower:
-            return True
-    return False
+from src.data_loader import (
+    load_triviaqa,
+    format_prompt,
+    check_correct,
+    check_correct_exact,
+)
 
 
 # ── Constants ──────────────────────────────────────────────────────────────────
@@ -166,7 +155,7 @@ def _compute_ref_layer_auroc(
     Uses the same mean-diff v as C2_truth_direction.py but with HF hooks.
     Returns {layer: auroc} dict.
     """
-    from src.data_loader import format_prompt, check_correct
+    from src.data_loader import format_prompt, check_correct_exact
 
     # Extract hidden states per layer
     h_correct = {li: [] for li in ref_layers}
@@ -184,7 +173,11 @@ def _compute_ref_layer_auroc(
     for s in samples:
         prompt = format_prompt(s["question"], s.get("context", ""), dataset="triviaqa")
         tokens = tokenizer(
-            prompt, return_tensors="pt", truncation=True, max_length=1024
+            prompt,
+            return_tensors="pt",
+            truncation=True,
+            max_length=1024,
+            truncation_side="left",  # keep TAIL (Question) — see code review Critical 1
         ).to(device)
 
         # Register hooks for all ref layers in one forward pass
@@ -224,7 +217,7 @@ def _compute_ref_layer_auroc(
             gids.append(nid)
 
         ans = tokenizer.decode(gids, skip_special_tokens=True).strip()
-        is_correct = check_correct(ans, s["answers"], dataset="triviaqa")
+        is_correct = check_correct_exact(ans, s["answers"])  # exact label (High 3)
 
         for li in ref_layers:
             if li in caches:
@@ -357,7 +350,7 @@ class TriviaQADataset(Dataset):
         self,
         samples: list[dict],
         tokenizer,
-        max_length: int = 768,
+        max_length: int = 1024,
         synthetic_kw_lookup: dict[str, str] | None = None,
     ):
         self.data = []
@@ -378,7 +371,7 @@ class TriviaQADataset(Dataset):
             # Tokenize: prompt + answer (for CE loss on answer token)
             prompt_ids = tokenizer.encode(prompt, add_special_tokens=True)
             if len(prompt_ids) > max_length:
-                prompt_ids = prompt_ids[-max_length:]
+                prompt_ids = prompt_ids[-max_length:]  # keep TAIL (Question); 1024 window = eval window (High 4)
             # Full input = prompt + answer_token (we compute loss only on answer pos)
             input_ids = prompt_ids + [y_true_id]
             # Labels: -100 for prompt, y_true_id for answer position
@@ -508,7 +501,11 @@ def train_lora_delta(args):
                 s["question"], s.get("context", ""), dataset="triviaqa"
             )
             tokens = tokenizer(
-                prompt, return_tensors="pt", truncation=True, max_length=1024
+                prompt,
+                return_tensors="pt",
+                truncation=True,
+                max_length=1024,
+                truncation_side="left",  # keep TAIL (Question) — see code review Critical 1
             ).to(device)
 
             # Hook at reference layer
@@ -538,7 +535,7 @@ def train_lora_delta(args):
                 nid = int(logits[0, -1, :].argmax().item())
                 gids.append(nid)
             ans = tokenizer.decode(gids, skip_special_tokens=True).strip()
-            is_correct = check_correct(ans, s["answers"], dataset="triviaqa")
+            is_correct = check_correct_exact(ans, s["answers"])  # exact label (High 3)
 
             h_vec = _cache["h"].float().cpu().numpy().flatten()
             if is_correct:
@@ -1017,7 +1014,7 @@ def generate_with_model(
         prompt, add_special_tokens=True, return_tensors="pt"
     ).to(device)
     if input_ids.shape[1] > 1024:
-        input_ids = input_ids[:, :1024]
+        input_ids = input_ids[:, -1024:]  # keep TAIL (Question) — see code review Critical 1
 
     outputs = model(input_ids=input_ids)
     logits = outputs.logits[0, -1, :].float().cpu()  # [vocab_size]
@@ -1040,8 +1037,164 @@ def generate_with_model(
     return full_text, first_token_id, logits
 
 
+def _eval_split(model, tokenizer, samples, device, desc):
+    """Evaluate one model on one sample list. Returns per-sample record list."""
+    out = []
+    for s in tqdm(samples, desc=desc):
+        prompt = format_prompt(s["question"], s.get("context", ""), dataset="triviaqa")
+        full_text, ft_id, logits = generate_with_model(model, tokenizer, prompt, device)
+        y_true_id = get_first_answer_token_id(tokenizer, s["answers"])
+        ft_correct = y_true_id is not None and ft_id == y_true_id
+        em_correct = check_correct_exact(full_text, s["answers"])  # exact (primary)
+        em_fuzzy = check_correct(
+            full_text, s["answers"], dataset="triviaqa"
+        )  # reference
+        category = classify_sample(
+            logits, y_true_id, full_text, s["answers"], exact=True
+        )
+        out.append(
+            {
+                "question": s["question"],
+                "answers": s["answers"],
+                "y_true_id": y_true_id,
+                "ft_id": ft_id,
+                "ft_correct": ft_correct,
+                "em_correct": em_correct,
+                "em_fuzzy": em_fuzzy,
+                "full_text": full_text,
+                "category": category,
+            }
+        )
+    return out
+
+
+def _build_split_summary(bl_results, lora_results, split_name, seed):
+    """Summary + gates for one split (val = selection, test = report)."""
+    n = len(bl_results)
+    has_lora = len(lora_results) > 0
+    bl_em = sum(1 for r in bl_results if r["em_correct"])
+    lo_em = sum(1 for r in lora_results if r["em_correct"])
+    bl_ft = sum(1 for r in bl_results if r["ft_correct"])
+    lo_ft = sum(1 for r in lora_results if r["ft_correct"])
+    bl_em_fuzzy = sum(1 for r in bl_results if r["em_fuzzy"])
+    lo_em_fuzzy = sum(1 for r in lora_results if r["em_fuzzy"])
+
+    categories = ["KC", "KW", "DK"]
+    cat_stats = {}
+    for cat in categories:
+        cat_stats[cat] = {
+            "n": sum(1 for r in bl_results if r["category"] == cat),
+            "bl_em": 0,
+            "lo_em": 0,
+            "bl_ft": 0,
+            "lo_ft": 0,
+        }
+    for i in range(n):
+        cat = bl_results[i]["category"]
+        if bl_results[i]["em_correct"]:
+            cat_stats[cat]["bl_em"] += 1
+        if bl_results[i]["ft_correct"]:
+            cat_stats[cat]["bl_ft"] += 1
+        if has_lora:
+            if lora_results[i]["em_correct"]:
+                cat_stats[cat]["lo_em"] += 1
+            if lora_results[i]["ft_correct"]:
+                cat_stats[cat]["lo_ft"] += 1
+
+    kw_n = cat_stats["KW"]["n"]
+    kc_n = cat_stats["KC"]["n"]
+
+    # Gate P20.1.2: KW exact match Δ > 0
+    kw_bl_em = cat_stats["KW"]["bl_em"]
+    kw_lo_em = cat_stats["KW"]["lo_em"]
+    gate_p2012 = kw_lo_em > kw_bl_em
+
+    # Gate P20.1.3: KC exact match degradation ≤ 1
+    kc_bl_em = cat_stats["KC"]["bl_em"]
+    kc_lo_em = cat_stats["KC"]["lo_em"]
+    kc_degradation = kc_bl_em - kc_lo_em
+    gate_p2013 = kc_degradation <= 1
+
+    return {
+        "split": split_name,
+        "seed": seed,
+        "n_total": n,
+        "baseline_em_accuracy": bl_em / n if n else 0.0,
+        "lora_em_accuracy": lo_em / n if (n and has_lora) else 0.0,
+        "em_delta": (lo_em - bl_em) / n if n else 0.0,
+        "baseline_em_fuzzy": bl_em_fuzzy / n if n else 0.0,
+        "lora_em_fuzzy": lo_em_fuzzy / n if n else 0.0,
+        "baseline_ft_accuracy": bl_ft / n if n else 0.0,
+        "lora_ft_accuracy": lo_ft / n if n else 0.0,
+        "ft_delta": (lo_ft - bl_ft) / n if n else 0.0,
+        "per_category": cat_stats,
+        "gates": {
+            "P20.1.2": {
+                "description": "KW exact match Δ > 0",
+                "baseline_kw_em": kw_bl_em,
+                "lora_kw_em": kw_lo_em,
+                "kw_n": kw_n,
+                "delta": kw_lo_em - kw_bl_em,
+                "pass": gate_p2012,
+            },
+            "P20.1.3": {
+                "description": "KC exact match degradation ≤ 1",
+                "baseline_kc_em": kc_bl_em,
+                "lora_kc_em": kc_lo_em,
+                "kc_n": kc_n,
+                "degradation": kc_degradation,
+                "pass": gate_p2013,
+            },
+        },
+    }
+
+
+def _print_split_summary(tag, s, has_lora):
+    """Print one split's summary table (val/test share the format)."""
+    n = s["n_total"]
+    print(f"\n  ── SPLIT: {tag} ──")
+    print(f"    N = {n} | KC={s['per_category']['KC']['n']} "
+          f"KW={s['per_category']['KW']['n']} DK={s['per_category']['DK']['n']}")
+    print(f"    Exact-match accuracy:")
+    print(f"      Baseline: {s['baseline_em_accuracy']:.1%}")
+    if has_lora:
+        print(f"      LoRA:     {s['lora_em_accuracy']:.1%}")
+        print(f"      Delta:    {s['em_delta']:+.1%}")
+    print(f"    Fuzzy-match accuracy (reference):")
+    print(f"      Baseline: {s['baseline_em_fuzzy']:.1%}")
+    if has_lora:
+        print(f"      LoRA:     {s['lora_em_fuzzy']:.1%}")
+    print(f"    First-token accuracy:")
+    print(f"      Baseline: {s['baseline_ft_accuracy']:.1%}")
+    if has_lora:
+        print(f"      LoRA:     {s['lora_ft_accuracy']:.1%}")
+        print(f"      Delta:    {s['ft_delta']:+.1%}")
+    print(f"    Per-category EM:")
+    for cat in ["KC", "KW", "DK"]:
+        cs = s["per_category"][cat]
+        bl_a = cs["bl_em"] / max(cs["n"], 1)
+        if has_lora:
+            lo_a = cs["lo_em"] / max(cs["n"], 1)
+            print(f"      {cat} (n={cs['n']}): baseline={bl_a:.1%} lora={lo_a:.1%} delta={lo_a - bl_a:+.1%}")
+        else:
+            print(f"      {cat} (n={cs['n']}): baseline={bl_a:.1%}")
+    if has_lora:
+        print(f"    Gates:")
+        for gname, ginfo in s["gates"].items():
+            status = "✅ PASS" if ginfo["pass"] else "❌ FAIL"
+            print(f"      {gname}: {status} — {ginfo['description']}")
+    else:
+        print(f"    Gates: (run training first)")
+
+
 def evaluate(args):
-    """Evaluate LoRA model vs baseline on test set."""
+    """Evaluate LoRA model vs baseline on held-out val + test splits.
+
+    Hyperparameter selection (β/λ/epoch) is made on the VAL split only; the
+    TEST split is reported but never used for selection
+    (code-review-2026-08-24 High 4). val/test are disjoint slices of one
+    shuffled load, so no sample overlap.
+    """
     device = "cuda" if torch.cuda.is_available() else "cpu"
     # Allow caller to override model path (e.g., train_contrastive.py)
     _MODEL_PATH = getattr(args, "model_path", None) or MODEL_PATH
@@ -1052,8 +1205,9 @@ def evaluate(args):
         else _get_lora_dir(getattr(args, "lambda_delta", 0.1), _kl_beta)
     )
     results_path = _get_results_path(getattr(args, "lambda_delta", 0.1), _kl_beta)
+    n_val = getattr(args, "n_val", 0)
     print(
-        f"Phase 20.1: LoRA δ-Corrective Evaluation | n_test={args.n_test} | λ={getattr(args, 'lambda_delta', 0.1)}"
+        f"Phase 20.1: LoRA δ-Corrective Evaluation | n_val={n_val} n_test={args.n_test} | λ={getattr(args, 'lambda_delta', 0.1)}"
     )
 
     # ── 1. Load tokenizer ─────────────────────────────────────────────────
@@ -1067,49 +1221,31 @@ def evaluate(args):
         tokenizer.pad_token_id = tokenizer.eos_token_id
     hf_kwargs = dict(trust_remote_code=True, local_files_only=True)
 
-    # ── 2. Evaluate baseline ──────────────────────────────────────────────
-    print("\n[1/3] Evaluating baseline...")
+    # ── 2. Splits: val/test disjoint, from one shuffled load ──────────────
+    combined = load_triviaqa(n_samples=n_val + args.n_test, seed=args.seed)
+    val_samples = combined[:n_val]
+    test_samples = combined[n_val:]
+    if n_val == 0:
+        print(
+            "  WARNING: n_val=0 → no held-out split; selection falls back on test (not recommended)"
+        )
+
+    # ── 3. Evaluate baseline (on both splits) ─────────────────────────────
+    print(f"\n[1/3] Evaluating baseline ({n_val} val + {args.n_test} test)...")
     base_model = AutoModelForCausalLM.from_pretrained(
         _MODEL_PATH, **hf_kwargs, torch_dtype=torch.float16
     ).to(device)
     base_model.eval()
 
-    test_samples = load_triviaqa(n_samples=args.n_test, seed=args.seed)
-    bl_results = []
-    for s in tqdm(test_samples, desc="  Baseline"):
-        prompt = format_prompt(s["question"], s.get("context", ""), dataset="triviaqa")
-        full_text, ft_id, logits = generate_with_model(
-            base_model, tokenizer, prompt, device
-        )
-        y_true_id = get_first_answer_token_id(tokenizer, s["answers"])
-        ft_correct = y_true_id is not None and ft_id == y_true_id
-        em_correct = check_correct_exact(full_text, s["answers"])  # exact (primary)
-        em_fuzzy = check_correct(
-            full_text, s["answers"], dataset="triviaqa"
-        )  # reference
-        category = classify_sample(
-            logits, y_true_id, full_text, s["answers"], exact=True
-        )
-        bl_results.append(
-            {
-                "question": s["question"],
-                "answers": s["answers"],
-                "y_true_id": y_true_id,
-                "ft_id": ft_id,
-                "ft_correct": ft_correct,
-                "em_correct": em_correct,
-                "em_fuzzy": em_fuzzy,
-                "full_text": full_text,
-                "category": category,
-            }
-        )
+    bl_val = _eval_split(base_model, tokenizer, val_samples, device, "  Baseline val")
+    bl_test = _eval_split(base_model, tokenizer, test_samples, device, "  Baseline test")
 
     del base_model
     gc.collect()
     torch.cuda.empty_cache()
 
-    # ── 3. Evaluate LoRA model ─────────────────────────────────────────────
-    lora_results = []
+    # ── 4. Evaluate LoRA model (on both splits) ───────────────────────────
+    lora_val, lora_test = [], []
     if getattr(args, "skip_lora", False):
         print("\n[2/3] Skipping LoRA evaluation (--skip_lora)")
     elif not lora_dir.exists():
@@ -1150,146 +1286,50 @@ def evaluate(args):
         lora_model = PeftModel.from_pretrained(base, str(lora_dir), config=_lora_cfg)
         lora_model.eval()
 
-        for s in tqdm(test_samples, desc="  LoRA"):
-            prompt = format_prompt(
-                s["question"], s.get("context", ""), dataset="triviaqa"
-            )
-            full_text, ft_id, logits = generate_with_model(
-                lora_model, tokenizer, prompt, device
-            )
-            y_true_id = get_first_answer_token_id(tokenizer, s["answers"])
-            ft_correct = y_true_id is not None and ft_id == y_true_id
-            em_correct = check_correct_exact(full_text, s["answers"])  # exact (primary)
-            em_fuzzy = check_correct(
-                full_text, s["answers"], dataset="triviaqa"
-            )  # reference
-            category = classify_sample(
-                logits, y_true_id, full_text, s["answers"], exact=True
-            )
-            lora_results.append(
-                {
-                    "question": s["question"],
-                    "answers": s["answers"],
-                    "y_true_id": y_true_id,
-                    "ft_id": ft_id,
-                    "ft_correct": ft_correct,
-                    "em_correct": em_correct,
-                    "em_fuzzy": em_fuzzy,
-                    "full_text": full_text,
-                    "category": category,
-                }
-            )
+        lora_val = _eval_split(lora_model, tokenizer, val_samples, device, "  LoRA val")
+        lora_test = _eval_split(lora_model, tokenizer, test_samples, device, "  LoRA test")
 
         del base, lora_model
         gc.collect()
         torch.cuda.empty_cache()
 
-    # ── Summary & Gates ────────────────────────────────────────────────────
-    has_lora = len(lora_results) > 0
+    # ── 5. Summaries & gates (val = selection, test = report) ─────────────
+    has_lora = len(lora_test) > 0
     print(f"\n[{'3/3' if has_lora else '2/2'}] Computing summary...")
-    n = len(test_samples)
-    bl_em = sum(1 for r in bl_results if r["em_correct"])
-    lo_em = sum(1 for r in lora_results if r["em_correct"])
-    bl_ft = sum(1 for r in bl_results if r["ft_correct"])
-    lo_ft = sum(1 for r in lora_results if r["ft_correct"])
-    bl_em_fuzzy = sum(1 for r in bl_results if r["em_fuzzy"])
-    lo_em_fuzzy = sum(1 for r in lora_results if r["em_fuzzy"])
-
-    # Per-category
-    categories = ["KC", "KW", "DK"]
-    cat_stats = {}
-    for cat in categories:
-        cat_stats[cat] = {
-            "n": sum(1 for r in bl_results if r["category"] == cat),
-            "bl_em": 0,
-            "lo_em": 0,
-            "bl_ft": 0,
-            "lo_ft": 0,
-        }
-    for i in range(n):
-        cat = bl_results[i]["category"]
-        if bl_results[i]["em_correct"]:
-            cat_stats[cat]["bl_em"] += 1
-        if bl_results[i]["ft_correct"]:
-            cat_stats[cat]["bl_ft"] += 1
-        if has_lora:
-            if lora_results[i]["em_correct"]:
-                cat_stats[cat]["lo_em"] += 1
-            if lora_results[i]["ft_correct"]:
-                cat_stats[cat]["lo_ft"] += 1
-
-    kw_n = cat_stats["KW"]["n"]
-    kc_n = cat_stats["KC"]["n"]
-
-    # Gate P20.1.2: KW exact match Δ > 0
-    kw_bl_em = cat_stats["KW"]["bl_em"]
-    kw_lo_em = cat_stats["KW"]["lo_em"]
-    gate_p2012 = kw_lo_em > kw_bl_em
-
-    # Gate P20.1.3: KC exact match degradation ≤ 1
-    kc_bl_em = cat_stats["KC"]["bl_em"]
-    kc_lo_em = cat_stats["KC"]["lo_em"]
-    kc_degradation = kc_bl_em - kc_lo_em
-    gate_p2013 = kc_degradation <= 1
 
     results = {
         "config": {
             "phase": "20.1",
-            "n_test": n,
+            "n_val": n_val,
+            "n_test": args.n_test,
             "seed": args.seed,
             "rank_threshold": RANK_THRESHOLD,
+            "protocol": "held-out val for β/λ/epoch selection; test reported, never used for selection",
         },
-        "summary": {
-            "n_total": n,
-            "baseline_em_accuracy": bl_em / n,
-            "lora_em_accuracy": lo_em / n,
-            "em_delta": (lo_em - bl_em) / n,
-            "baseline_em_fuzzy": bl_em_fuzzy / n,
-            "lora_em_fuzzy": lo_em_fuzzy / n,
-            "baseline_ft_accuracy": bl_ft / n,
-            "lora_ft_accuracy": lo_ft / n,
-            "ft_delta": (lo_ft - bl_ft) / n,
-            "per_category": cat_stats,
-            "gates": {
-                "P20.1.2": {
-                    "description": "KW exact match Δ > 0",
-                    "baseline_kw_em": kw_bl_em,
-                    "lora_kw_em": kw_lo_em,
-                    "kw_n": kw_n,
-                    "delta": kw_lo_em - kw_bl_em,
-                    "pass": gate_p2012,
-                },
-                "P20.1.3": {
-                    "description": "KC exact match degradation ≤ 1",
-                    "baseline_kc_em": kc_bl_em,
-                    "lora_kc_em": kc_lo_em,
-                    "kc_n": kc_n,
-                    "degradation": kc_degradation,
-                    "pass": gate_p2013,
-                },
-            },
-        },
-        "per_sample": [],
     }
+    if n_val > 0:
+        results["val"] = _build_split_summary(bl_val, lora_val, "val", args.seed)
+    results["test"] = _build_split_summary(bl_test, lora_test, "test", args.seed)
 
-    # Per-sample records
-    for i in range(n):
+    # Per-sample records (test/report split only)
+    results["per_sample"] = []
+    for i in range(len(test_samples)):
         sample = {
-            "question": bl_results[i]["question"],
-            "category": bl_results[i]["category"],
+            "question": bl_test[i]["question"],
+            "category": bl_test[i]["category"],
             "baseline": {
-                "ft_correct": bl_results[i]["ft_correct"],
-                "em_correct": bl_results[i]["em_correct"],
-                "em_fuzzy": bl_results[i]["em_fuzzy"],
-                "full_text": bl_results[i]["full_text"],
+                "ft_correct": bl_test[i]["ft_correct"],
+                "em_correct": bl_test[i]["em_correct"],
+                "em_fuzzy": bl_test[i]["em_fuzzy"],
+                "full_text": bl_test[i]["full_text"],
             },
         }
         if has_lora:
             sample["lora"] = {
-                "ft_correct": lora_results[i]["ft_correct"],
-                "em_correct": lora_results[i]["em_correct"],
-                "em_fuzzy": lora_results[i]["em_fuzzy"],
-                "full_text": lora_results[i]["full_text"],
+                "ft_correct": lora_test[i]["ft_correct"],
+                "em_correct": lora_test[i]["em_correct"],
+                "em_fuzzy": lora_test[i]["em_fuzzy"],
+                "full_text": lora_test[i]["full_text"],
             }
         results["per_sample"].append(sample)
 
@@ -1297,39 +1337,9 @@ def evaluate(args):
     print(f"\n{'=' * 60}")
     print(f"RESULTS{' (baseline-only)' if not has_lora else ''}")
     print(f"{'=' * 60}")
-    print(f"  N = {n} | KC={kc_n} KW={kw_n} DK={cat_stats['DK']['n']}")
-    print(f"\n  Exact-match accuracy:")
-    print(f"    Baseline: {bl_em}/{n} = {bl_em / n:.1%}")
-    if has_lora:
-        print(f"    LoRA:     {lo_em}/{n} = {lo_em / n:.1%}")
-        print(f"    Delta:    {(lo_em - bl_em) / n:+.1%}")
-    print(f"\n  Fuzzy-match accuracy (reference):")
-    print(f"    Baseline: {bl_em_fuzzy}/{n} = {bl_em_fuzzy / n:.1%}")
-    if has_lora:
-        print(f"    LoRA:     {lo_em_fuzzy}/{n} = {lo_em_fuzzy / n:.1%}")
-    print(f"\n  First-token accuracy:")
-    print(f"    Baseline: {bl_ft}/{n} = {bl_ft / n:.1%}")
-    if has_lora:
-        print(f"    LoRA:     {lo_ft}/{n} = {lo_ft / n:.1%}")
-        print(f"    Delta:    {(lo_ft - bl_ft) / n:+.1%}")
-    print(f"\n  Per-category EM:")
-    for cat in categories:
-        cs = cat_stats[cat]
-        bl_a = cs["bl_em"] / max(cs["n"], 1)
-        if has_lora:
-            lo_a = cs["lo_em"] / max(cs["n"], 1)
-            print(
-                f"    {cat} (n={cs['n']}): baseline={bl_a:.1%} lora={lo_a:.1%} delta={lo_a - bl_a:+.1%}"
-            )
-        else:
-            print(f"    {cat} (n={cs['n']}): baseline={bl_a:.1%}")
-    if has_lora:
-        print(f"\n  Gates:")
-        for gname, ginfo in results["summary"]["gates"].items():
-            status = "✅ PASS" if ginfo["pass"] else "❌ FAIL"
-            print(f"    {gname}: {status} — {ginfo['description']}")
-    else:
-        print(f"\n  Gates: (run training first)")
+    if n_val > 0:
+        _print_split_summary("val (SELECTION — never report this)", results["val"], has_lora)
+    _print_split_summary("test (REPORT)", results["test"], has_lora)
     print(f"{'=' * 60}")
 
     with open(results_path, "w") as f:
@@ -1447,6 +1457,7 @@ def main():
         "Default: all NUM_DELTA_LAYERS late layers.",
     )
     # Eval
+    parser.add_argument("--n_val", type=int, default=200)
     parser.add_argument("--n_test", type=int, default=100)
     parser.add_argument(
         "--lora_checkpoint",
@@ -1500,10 +1511,10 @@ def main():
                 args.lambda_delta = lam
                 train_lora_delta(args)
 
-                # Evaluate all epochs, pick best
+                # Evaluate all epochs; pick best by VAL split (held-out selection)
                 lora_dir = _get_lora_dir(lam)
                 best_epoch = None
-                best_kw_delta = -1
+                best_val_kw_delta = -1e9
                 for ep in range(1, args.epochs + 1):
                     ep_dir = lora_dir / f"epoch_{ep}"
                     if not ep_dir.exists():
@@ -1512,34 +1523,49 @@ def main():
                     args.lambda_delta = lam
                     print(f"\n  --- Eval epoch {ep} ---")
                     evaluate(args)
-                    # Read results to check KW delta
+                    # Read results: selection on val, report on test
                     rp = _get_results_path(lam)
                     if rp.exists():
                         with open(rp) as f:
                             res = json.load(f)
-                        kw_delta = res["summary"]["gates"]["P20.1.2"]["delta"]
-                        kc_deg = res["summary"]["gates"]["P20.1.3"]["degradation"]
-                        print(f"  λ={lam} ep={ep}: KW_Δ={kw_delta} KC_deg={kc_deg}")
+                        if "val" not in res:
+                            print("  WARNING: no val split in results (--n_val 0?) — "
+                                  "selection falls back on test (not recommended)")
+                            val = res["test"]["gates"]
+                        else:
+                            val = res["val"]["gates"]
+                        test = res["test"]["gates"]
+                        print(
+                            f"  λ={lam} ep={ep}: VAL KW_Δ={val['P20.1.2']['delta']} "
+                            f"KC_deg={val['P20.1.3']['degradation']} | "
+                            f"TEST KW_Δ={test['P20.1.2']['delta']} "
+                            f"KC_deg={test['P20.1.3']['degradation']}"
+                        )
                         all_results[f"λ={lam}_ep={ep}"] = {
-                            "kw_delta": kw_delta,
-                            "kc_degradation": kc_deg,
-                            "em_delta": res["summary"]["em_delta"],
+                            "val_kw_delta": val["P20.1.2"]["delta"],
+                            "val_kc_degradation": val["P20.1.3"]["degradation"],
+                            "test_kw_delta": test["P20.1.2"]["delta"],
+                            "test_kc_degradation": test["P20.1.3"]["degradation"],
+                            "test_em_delta": res["test"]["em_delta"],
                         }
-                        if kw_delta > best_kw_delta:
-                            best_kw_delta = kw_delta
+                        if val["P20.1.2"]["delta"] > best_val_kw_delta:
+                            best_val_kw_delta = val["P20.1.2"]["delta"]
                             best_epoch = ep
                 if best_epoch:
-                    print(f"\n  Best: λ={lam} epoch={best_epoch} KW_Δ={best_kw_delta}")
+                    print(
+                        f"\n  Best: λ={lam} epoch={best_epoch} (by VAL KW_Δ={best_val_kw_delta})"
+                    )
 
             # Summary
             print(f"\n{'=' * 60}")
-            print("SWEEP SUMMARY")
+            print("SWEEP SUMMARY (selection = val, report = test)")
             print(f"{'=' * 60}")
             for k, v in sorted(all_results.items()):
-                kw_mark = "✅" if v["kw_delta"] > 0 else "❌"
-                kc_mark = "✅" if v["kc_degradation"] <= 1 else "❌"
+                kw_mark = "✅" if v["val_kw_delta"] > 0 else "❌"
+                kc_mark = "✅" if v["val_kc_degradation"] <= 1 else "❌"
                 print(
-                    f"  {k}: KW_Δ={v['kw_delta']} {kw_mark} | KC_deg={v['kc_degradation']} {kc_mark} | EM_Δ={v['em_delta']:+.1%}"
+                    f"  {k}: VAL KW_Δ={v['val_kw_delta']} {kw_mark} | VAL KC_deg={v['val_kc_degradation']} {kc_mark} | "
+                    f"TEST KW_Δ={v['test_kw_delta']} | TEST KC_deg={v['test_kc_degradation']} | TEST EM_Δ={v['test_em_delta']:+.1%}"
                 )
             # Save sweep summary
             sweep_path = OUTPUT_DIR / "s20_1_sweep_summary.json"
