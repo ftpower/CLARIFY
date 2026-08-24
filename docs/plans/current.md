@@ -3,6 +3,18 @@
 > 每次会话开始/结束读写本文件。归档计划在 `docs/phase*.md`，不在此列。
 > 最后更新：2026-08-24
 
+## 今日进度（2026-08-24 下半场：P0 修复与重跑）
+
+**完成（commit `d9e0c1d` / `8cc56f0` / `2ea18c5`）**：
+1. P0 三项代码修复全部落地：`format_prompt` 截断上下文保 Question（实测 prompt 中位 542、max 1013、0 截断）、truth direction 5 折 CV（C2+8B，删符号翻转）、标签全切 exact（词边界版）；附带 held-out `--n_val` 选参（λ sweep 改在 val 上选 epoch）、训练/评估 1024 窗口统一、TLDC rank 1-indexed、D2 rank bug 修复、`.gitignore` 白名单纳入论文文档
+2. 重跑结果：**检测** truth direction 0.7564（L18）/ LR probe 0.7708（L26）/ 表面特征 0.61-0.63 —— TriviaQA 天花板实锤，0.9066 作废；**TLDC** D2 前提证伪（L27 秩优于 L20，KW 22/24）+ KW Δ 不显著 → 干预线关闭；**JS/LR**（HellaSwag 0.936 不迁移）
+3. **检测叙事重构（B）**：开题框架按「任务依赖性」全面修订（14 处），定理 2 上界收紧 ≈0（rank 增益传输），创新点 3 重写为「上界收紧 + 协议修复方法论」
+4. 新脚本：`detect_js_lr_cv.py`、`detect_lr_probe_cv.py`（干净 CV 协议，已入库）
+
+## 明日待办（第一项）
+
+- [ ] **Phase 24 β sweep 修复后重跑**（P0 最后一项）：`python experiments/lin_theory/train_lora_delta.py --mode train --n_train 200 --n_test 800 --n_val 200 --epochs 1 --kc_ce_only --kl_beta 0.3`（β∈{0.1,0.3,0.5,0.7} 各跑一次；用 `--n_val` 在 val 上选 β/epoch，test 只报告；旧 net-5 数字待此重跑确认后替换）
+
 ## 今日进度（2026-08-24）
 
 **论文侧（主线大推进，无新实验）**：
@@ -38,7 +50,7 @@
 - [x] truth direction 改 5 折 StratifiedKFold（train folds 拟合方向 + held-out 评测），删除 `max(auroc,1-auroc)` 评测集符号翻转（C2 + 8B）
 - [x] 检测/TLDC 标签全切 exact（词边界版 `check_correct_exact`）；TLDC rank 口径统一 1-indexed top-50
 - [x] 划 held-out 校验集选 β/λ/epoch（`--n_val`，与 test 无重叠；λ sweep 的 epoch 选择改在 val 上，test 只报告）
-- [ ] 重跑进度：检测（CV）✅ → **truth direction L18 = 0.7564±0.055**（<0.85）；JS/LR 检测 ✅ → **joint CV 0.61-0.63，HellaSwag 0.936 不迁移 → 检测支柱在 TriviaQA 上正式失守，需重构叙事决策**；TLDC ✅ → **D2 前提证伪（L27 秩优于 L20，KW 22/24）+ KW Δ +8.3% 不显著（2/24）→ TLDC 干预线关闭**；→ **Phase 24 β sweep 待跑** → 以新数字更新开题框架 §6 与论文
+- [ ] 重跑进度：检测（CV）✅ 0.7564；LR probe ✅ 0.7708；JS/LR ✅ 0.61-0.63 → **检测叙事已重构为「任务依赖性」（见开题框架 §6.1）**；TLDC ✅ D2 前提证伪 → **干预线关闭**；→ **Phase 24 β sweep 待跑（明日第一项）** → 以新数字更新开题框架 §6.3
 
 ### 论文写作（可并行，不依赖重跑）
 - [ ] 从 6 个候选题目中选定论文题目（见 `docs/thesis/开题报告-率失真框架.md` §0）
@@ -56,9 +68,9 @@
 - [ ] 干预闭环达成后：跨数据集/跨规模泛化验证
 
 ### 依赖与阻塞
-- **阻塞（更新）**：检测 CV 已重测 → 0.7564 < 0.85，**检测达标结论作废，待决策对策**；TLDC / Phase 24 / 8B 数字仍需修复后重跑
+- **阻塞（更新）**：检测支柱已定案（任务依赖性叙事，开题框架已修订）；**Phase 24 β sweep 是唯一未重跑的头部数字**——明日重跑前实验章节不得引用旧 net-5
 - **阻塞**：干预效果 Δacc>0 未达成——所有后续（泛化、论文主体）都依赖它
-- **依赖**：8B 实验 → AutoDL 服务器可用性；本地只能跑 1.7B
+- **依赖**：8B 实验 → AutoDL 服务器可用性；本地只能跑 1.7B（8B 检测/干预数字均 in-sample 待重跑，等叙事与服务器时间安排）
 
 ## 环境备忘（快速恢复）
 
