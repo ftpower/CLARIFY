@@ -14,6 +14,8 @@ docs/*
 !docs/plans/current.md
 !docs/dsh-usage-guide.md
 !docs/dsh-gap-checklist.md
+!docs/thesis/
+!docs/code-review-*.md
 __pycache__/
 *.pyc
 *.log
