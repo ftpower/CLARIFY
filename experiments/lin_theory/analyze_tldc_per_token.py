@@ -33,7 +33,7 @@ for _p in [
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from src.data_loader import load_triviaqa, format_prompt, check_correct
+from src.data_loader import load_triviaqa, format_prompt, check_correct_exact
 from common import (
     load_model_and_unembed,
     get_first_answer_token_id,
@@ -86,7 +86,7 @@ def classify_samples(
         # Get hidden state and logits at early layer
         tokens = model.to_tokens(prompt, prepend_bos=True)
         if tokens.shape[1] > 1024:
-            tokens = tokens[:, :1024]
+            tokens = tokens[:, -1024:]  # keep TAIL (Question) — code review Critical 1
 
         hook_early = f"blocks.{layer_early}.hook_resid_post"
         captured = {}
@@ -98,9 +98,9 @@ def classify_samples(
         with torch.no_grad():
             logits_final = model.run_with_hooks(tokens, fwd_hooks=[(hook_early, _hook)])
 
-        # Get rank from final logits
+        # Get rank from final logits (1-indexed — code review Medium 5)
         sorted_ids = logits_final[0, -1, :].float().argsort(descending=True)
-        rank = (sorted_ids == y_true_id).nonzero(as_tuple=True)[0].item()
+        rank = (sorted_ids == y_true_id).nonzero(as_tuple=True)[0].item() + 1
 
         # Baseline generation (no intervention)
         nid = int(logits_final[0, -1, :].argmax().item())
@@ -114,7 +114,7 @@ def classify_samples(
             nid = int(logits_final[0, -1, :].argmax().item())
             gids.append(nid)
         gen_text = tokenizer.decode(gids).strip()
-        is_correct = check_correct(gen_text, sample["answers"], dataset="triviaqa")
+        is_correct = check_correct_exact(gen_text, sample["answers"])  # exact (High 3)
 
         if rank <= rank_threshold:
             subset = "know_correct" if is_correct else "know_wrong"
@@ -166,7 +166,7 @@ def analyze_tldc_per_token(
 
     tokens = model.to_tokens(prompt, prepend_bos=True)
     if tokens.shape[1] > 1024:
-        tokens = tokens[:, :1024]
+        tokens = tokens[:, -1024:]  # keep TAIL (Question) — code review Critical 1
 
     hook_early = f"blocks.{layer_early}.hook_resid_post"
     hook_final_name = f"blocks.{final_layer}.hook_resid_post"
@@ -264,7 +264,7 @@ def analyze_tldc_per_token(
     # ── Also get baseline generation (l_final only, no TLDC) ──
     tokens_bl = model.to_tokens(prompt, prepend_bos=True)
     if tokens_bl.shape[1] > 1024:
-        tokens_bl = tokens_bl[:, :1024]
+        tokens_bl = tokens_bl[:, -1024:]  # keep TAIL (Question) — code review Critical 1
 
     with torch.no_grad():
         logits_bl = model(tokens_bl)
@@ -561,8 +561,11 @@ def main():
             max_new=20,
             print_tokens=False,
         )
-        is_correct = check_correct(result["gen_text"], e["answers"], dataset="triviaqa")
+        is_correct = check_correct_exact(result["gen_text"], e["answers"])  # exact (High 3)
         result["is_correct"] = is_correct
+        result["baseline_correct"] = check_correct_exact(
+            result["baseline_text"], e["answers"]
+        )
         result["subset"] = e["subset"]
         result["question"] = e["question"]
         result["answers"] = e["answers"]
@@ -652,33 +655,88 @@ def main():
         elif np.mean(corrected_dist) < 0:
             print(f"  → MECHANISM: TLDC primarily PUSHES DOWN distractor logit")
 
-    # ── Compare corrected vs non-corrected KW ──
+    # ── Group-level mechanism stats (2026-08-25: extended to KC/DK groups) ──
+    # Question: is TLDC "asymmetric" (pushes up y_true only when greedy is wrong)
+    # or "symmetric" (pushes up y_true everywhere → breaks KC)?
     non_corrected_kw = [
         r for r in all_results if r["subset"] == "know_wrong" and not r["is_correct"]
     ]
-    if corrected_kw and non_corrected_kw:
-        print(f"\n  ── Corrected vs Non-corrected KW comparison ──")
-        for label, group in [
-            ("Corrected", corrected_kw),
-            ("Not corrected", non_corrected_kw),
-        ]:
-            yt_d = []
-            dist_d = []
-            for r in group:
-                for s in r["steps"]:
-                    l_early = s["l_early"].float().squeeze()
-                    l_final = s["l_final"].float().squeeze()
-                    delta = l_early - l_final
-                    yt_d.append(float(delta[r["y_true_id"]].item()))
-                    final_am = int(l_final.argmax().item())
-                    if final_am != r["y_true_id"]:
-                        dist_d.append(float(delta[final_am].item()))
-            print(
-                f"    {label}: Δ_y_true={np.mean(yt_d):+.2f}, Δ_dist={np.mean(dist_d):+.2f}"
-            )
+    kept_kc = [r for r in all_results if r["subset"] == "know_correct" and r["is_correct"]]
+    broken_kc = [r for r in all_results if r["subset"] == "know_correct" and not r["is_correct"]]
+    rescued_dk = [
+        r
+        for r in all_results
+        if r["subset"] == "dont_know"
+        and r["is_correct"]
+        and not r["baseline_correct"]
+    ]
+    not_rescued_dk = [
+        r
+        for r in all_results
+        if r["subset"] == "dont_know"
+        and not r["is_correct"]
+        and not r["baseline_correct"]
+    ]
+
+    def _group_deltas(group):
+        """Per-step (delta_yt, delta_dist) lists for a group of results."""
+        yt, dist = [], []
+        for r in group:
+            for s in r["steps"]:
+                l_early = s["l_early"].float().squeeze()
+                l_final = s["l_final"].float().squeeze()
+                delta = l_early - l_final
+                yt.append(float(delta[r["y_true_id"]].item()))
+                final_am = int(l_final.argmax().item())
+                if final_am != r["y_true_id"]:
+                    dist.append(float(delta[final_am].item()))
+        return yt, dist
+
+    print(f"\n  ── Group mechanism table (mean ± std; push-up = Δ_y_true>0 rate) ──")
+    print(
+        f"  {'group':>14} {'n':>4} {'Δ_y_true':>14} {'Δ_distractor':>14} {'push-up%':>8} {'push-down%':>9}"
+    )
+    groups = [
+        ("KW rescued", corrected_kw),
+        ("KW not rescued", non_corrected_kw),
+        ("KC kept", kept_kc),
+        ("KC broken", broken_kc),
+        ("DK rescued", rescued_dk),
+        ("DK not rescued", not_rescued_dk),
+    ]
+    for label, group in groups:
+        if not group:
+            print(f"  {label:>14} {'0':>4}")
+            continue
+        yt, dist = _group_deltas(group)
+        push_up = 100 * np.mean([1 if d > 0 else 0 for d in yt])
+        push_down = 100 * np.mean([1 if d < 0 else 0 for d in dist]) if dist else float("nan")
+        print(
+            f"  {label:>14} {len(group):>4} {np.mean(yt):>+13.2f}±{np.std(yt):.2f} "
+            f"{np.mean(dist) if dist else 0.0:>+13.2f}±{np.std(dist) if dist else 0.0:.2f} "
+            f"{push_up:>7.1f}% {push_down:>8.1f}%"
+        )
+
+    # Flip-step histogram for rescued groups (step at which TLDC argmax first != baseline argmax)
+    def _flip_steps(group):
+        steps = []
+        for r in group:
+            for i, s in enumerate(r["steps"]):
+                tldc_g = r["gids"][i] if i < len(r["gids"]) else None
+                bl_g = r["gids_bl"][i] if i < len(r["gids_bl"]) else None
+                if tldc_g is not None and bl_g is not None and tldc_g != bl_g:
+                    steps.append(i)
+                    break
+        return steps
+
+    for label, group in [("KW rescued", corrected_kw), ("KC broken", broken_kc)]:
+        if group:
+            fs = _flip_steps(group)
+            print(f"  {label}: first-flip step distribution = {fs}")
+            print(f"           mean={np.mean(fs):.1f}, step0={sum(1 for s in fs if s == 0)}/{len(fs)}")
 
     # ── Save ──
-    # Save per-step data for corrected KW samples (serializable subset)
+    # Save per-step delta data for ALL samples (compact, serializable)
     save_data = []
     for r in all_results:
         entry_out = {
@@ -687,27 +745,30 @@ def main():
             "question": r["question"],
             "answers": r["answers"],
             "is_correct": r["is_correct"],
+            "baseline_correct": r["baseline_correct"],
             "gen_text": r["gen_text"],
             "baseline_text": r["baseline_text"],
             "gids": r["gids"],
             "gids_bl": r["gids_bl"],
         }
-        # For corrected KW, save full per-step logits
-        if r["subset"] == "know_wrong":
-            steps_out = []
-            for s in r["steps"]:
-                steps_out.append(
-                    {
-                        "step": s["step"],
-                        "chosen_id": s["chosen_id"],
-                        "l_early_top5": get_topk_info(s["l_early"], tokenizer, k=5),
-                        "l_final_top5": get_topk_info(s["l_final"], tokenizer, k=5),
-                        "l_combined_top5": get_topk_info(
-                            s["l_combined"], tokenizer, k=5
-                        ),
-                    }
-                )
-            entry_out["steps"] = steps_out
+        steps_out = []
+        for s in r["steps"]:
+            l_early = s["l_early"].float().squeeze()
+            l_final = s["l_final"].float().squeeze()
+            delta = l_early - l_final
+            final_am = int(l_final.argmax().item())
+            steps_out.append(
+                {
+                    "step": s["step"],
+                    "chosen_id": s["chosen_id"],
+                    "delta_yt": float(delta[r["y_true_id"]].item()),
+                    "final_argmax_id": final_am,
+                    "delta_distractor": (
+                        float(delta[final_am].item()) if final_am != r["y_true_id"] else None
+                    ),
+                }
+            )
+        entry_out["steps"] = steps_out
         save_data.append(entry_out)
 
     out_path = output_dir / "s15_2b_tldc_per_token.json"

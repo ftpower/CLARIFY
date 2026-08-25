@@ -464,12 +464,12 @@ def main():
         }
 
     for beta in args.betas:
-        print(f"\n  ── β = {beta:.1f} ──")
+        print(f"\n  ── β = {beta:.2f} ──")
         correct_by_subset = defaultdict(int)
         count_by_subset = defaultdict(int)
         beta_sample_flags = {}
 
-        for e in tqdm(test_entries, desc=f"    β={beta:.1f}", leave=False):
+        for e in tqdm(test_entries, desc=f"    β={beta:.2f}", leave=False):
             subset = e["subset"]
 
             gen_text, initial_logits = tldc_greedy_generate(
@@ -526,7 +526,7 @@ def main():
                 r = beta_results[s]
                 print(f"    {s}: {r['correct']}/{r['total']} (Δ={r['delta']:+.1%})")
 
-        all_results["betas"][f"beta={beta:.1f}"] = beta_results
+        all_results["betas"][f"beta={beta:.2f}"] = beta_results
 
         for e in test_entries:
             per_sample["samples"][e["sample_id"]][f"correct_beta{beta:.2f}"] = (
@@ -562,7 +562,7 @@ def main():
     print(f"  {'β':>6}  {'KW Δ':>8}  {'KW 95% CI':>18}  {'KC Δ':>8}  {'DK Δ':>8}  {'All Δ':>8}")
     print(f"  {'─' * 6}  {'─' * 8}  {'─' * 18}  {'─' * 8}  {'─' * 8}  {'─' * 8}")
     for beta in args.betas:
-        key = f"beta={beta:.1f}"
+        key = f"beta={beta:.2f}"
         r = all_results["betas"][key]
         kw = r["know_wrong"]
         print(

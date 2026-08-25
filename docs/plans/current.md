@@ -34,31 +34,14 @@
   ```bash
   python experiments/lin_theory/detect_lr_probe_rankfilter.py --n_samples 200 --seed 42
   ```
-- [ ] **2. 起跑 TLDC n=300（seed=123，β 覆盖有效区间）** ≈3-5h（RTX 5060）
-  ```bash
-  conda activate pytorch_env0 && cd ~/Git_Repository/CLARIFY
-  cp experiments/outputs/lin_theory/s14_tldc.json experiments/outputs/lin_theory/s14_tldc.n100.bak.json
-  screen -S tldc
-  python experiments/lin_theory/validate_s14_tldc.py \
-    --n_test 300 \
-    --betas 0.01 0.03 0.05 0.08 0.10 \
-    --save_samples
-  ```
-- [ ] **3. 双 seed 复现（seed=456）** ≈3-5h
-  ```bash
-  python experiments/lin_theory/validate_s14_tldc.py \
-    --n_test 300 \
-    --seed_test 456 \
-    --output_dir experiments/outputs/lin_theory/seed456 \
-    --betas 0.01 0.03 0.05 0.08 0.10 \
-    --save_samples
-  ```
-- [ ] **4. 判读（看输出表 KW 列）**
-  - 有效：小 β（0.01-0.05）KW CI 下界 > 0 + 双 seed 复现 + KC 损失 < 5%（25/25 → ≥24）
-  - 无效（此时才可关闭）：所有 β 的 KW CI 下界 ≈ 0 且无任何子集正向
-  - 中间态：仅单 seed 正向 → 加大 n（500）或换 seed，不下结论
-- [ ] **5. 若有效**：修复 `analyze_tldc_per_token.py`（截断/fuzzy/rank 三处旧 bug）后重跑机制分析——验证「不对称惩罚」在完整 prompt 下成立（TLDC 存废的真正判据）
-- [ ] **6. 结果写回**：`code-review-2026-08-24.md` + `project-state.md` + `plans/current.md`（含 per-sample 与 D2 明细对照；若步骤 1 显示无知污染，同步修订检测叙事）
+- [x] **2. 起跑 TLDC n=300（seed=123，β 覆盖有效区间）**（已完成 2026-08-25）
+- [x] **3. 双 seed 复现（seed=456）**（已完成 2026-08-25）
+- [x] **4. 判读（双 seed 结果，2026-08-25）**：
+  - 效应真实性 ✅ 定案：pooled KW 2/4/7/10/10/12/12 per 135，CP95 下界 β≥0.03 起 0.8%→4.7%；双 seed 方向全 β 一致；剂量-响应；β=0.05 双 seed 各自 CI 下界均 >0
+  - 判据未全满足：无单一 β 同时满足「双 seed KW CI 下界>0 + KC<5%」（β=0.03 pooled KC -4.0% ✓ 但 seed123 KW CI 下界 0.0%）；最优区间 All 仅 +0.7~1.7%
+  - **中间态偏有效：效应真实但昂贵**（KC 损 -4.0%→-22.5% 剂量响应）；Seed 异质实质化：β=0.03 时 seed456「救 10 毁 1」vs seed123「救 1 毁 5」
+- [ ] **5. per-token 机制分析（进行中，2026-08-25）**：`analyze_tldc_per_token.py` 三 bug 已修（截断/exact/rank）+ KC/DK 组统计扩展；运行中——`--seed_test 123 --n_test 300 --beta 0.03`，之后 seed=456 同参。回答「不对称惩罚在完整 prompt 下是否成立」+「seed 异质来源」，是 TLDC 存废真正判据
+- [~] **6. 结果写回**（进行中，本会话）：code-review-2026-08-24.md 重审节 ✅、project-state.md ✅、plans/current.md 本文件 ✅；机制分析结论出来后补充判读节
 - [ ] **7. TLDC 跑完后**：接 Phase 24 β sweep（见明日待办，P0 最后一项）
 
 ## 明日待办（第一项）
@@ -119,7 +102,7 @@
 - [ ] 干预闭环达成后：跨数据集/跨规模泛化验证
 
 ### 依赖与阻塞
-- **阻塞（更新）**：检测支柱已定案（任务依赖性叙事 + 2026-08-25 筛选验证：0.77 任务天花板，非无知污染）；**Phase 24 β sweep 是唯一未重跑的头部数字**——重跑前实验章节不得引用旧 net-5；TLDC 线已撤回"关闭"、**下午大样本定案中**（结果未知，不阻塞其他工作，但影响干预主线叙事与 Phase 25 优先级）
+- **阻塞（更新）**：检测支柱已定案（任务依赖性叙事 + 2026-08-25 筛选验证：0.77 任务天花板，非无知污染）；**Phase 24 β sweep 是唯一未重跑的头部数字**——重跑前实验章节不得引用旧 net-5；**TLDC 大样本定案完成**：KW 效应真实但昂贵（中间态偏有效），「不对称惩罚」存废由 per-token 机制分析定案（进行中）——若机制显示对称惩罚，TLDC 按机制证据关闭、干预主线转 Phase 25；若不对称成立，继续优化 tradeoff
 - **阻塞**：干预效果 Δacc>0 未达成——所有后续（泛化、论文主体）都依赖它
 - **依赖**：8B 实验 → AutoDL 服务器可用性；本地只能跑 1.7B（8B 检测/干预数字均 in-sample 待重跑，等叙事与服务器时间安排）
 
