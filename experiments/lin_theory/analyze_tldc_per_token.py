@@ -212,7 +212,6 @@ def analyze_tldc_per_token(
         tokens = tokens[:, -1024:]  # keep TAIL (Question) — code review Critical 1
 
     hook_early = f"blocks.{layer_early}.hook_resid_post"
-    hook_final_name = f"blocks.{final_layer}.hook_resid_post"
 
     captured = {}
 
@@ -220,32 +219,28 @@ def analyze_tldc_per_token(
         captured["h_early"] = act[:, -1:, :].detach()
         return act
 
-    def _hook_final(act, hook=None):
-        captured["h_final"] = act[:, -1:, :].detach()
-        return act
-
     # ── Step 0 (pre-generation): capture all three logit spaces ──
     with torch.no_grad():
-        _ = model.run_with_hooks(
+        logits_final_0 = model.run_with_hooks(
             tokens,
             fwd_hooks=[
                 (hook_early, _hook_early),
-                (hook_final_name, _hook_final),
             ],
         )
 
     h_early = captured["h_early"]
-    h_final = captured["h_final"]
 
     l_early_0 = compute_early_exit_logits(h_early, ln_final, W_U, b_U)
-    l_final_0 = compute_early_exit_logits(h_final, ln_final, W_U, b_U)
+    # l_final MUST be the model's true final logits (NOT a logit-lens recompute):
+    # recomputing via W_U@RMSNorm(h_L27) uses a [1,1,d] matmul that cublas rounds
+    # differently from the model's [1,seq,d] unembed — flipping ~13.5% of near-tied
+    # argmaxes on GPU and contaminating every trajectory attribution (2026-08-25).
+    l_final_0 = logits_final_0[0, -1:, :].float()
 
     if l_early_0.shape[-1] != l_final_0.shape[-1]:
         l_combined_0 = l_final_0
     else:
-        l_combined_0 = l_final_0.float() + beta * (
-            l_early_0.float() - l_final_0.float()
-        )
+        l_combined_0 = l_final_0 + beta * (l_early_0.float() - l_final_0)
 
     steps_log = []
     nid = int(l_combined_0.argmax(dim=-1).item())
@@ -264,24 +259,22 @@ def analyze_tldc_per_token(
         tokens = torch.cat([tokens, torch.tensor([[nid]], device=device)], dim=1)
 
         with torch.no_grad():
-            _ = model.run_with_hooks(
+            logits_final = model.run_with_hooks(
                 tokens,
                 fwd_hooks=[
                     (hook_early, _hook_early),
-                    (hook_final_name, _hook_final),
                 ],
             )
 
         h_early = captured["h_early"]
-        h_final = captured["h_final"]
 
         l_early = compute_early_exit_logits(h_early, ln_final, W_U, b_U)
-        l_final = compute_early_exit_logits(h_final, ln_final, W_U, b_U)
+        l_final = logits_final[0, -1:, :].float()  # TRUE final logits
 
         if l_early.shape[-1] != l_final.shape[-1]:
             l_combined = l_final
         else:
-            l_combined = l_final.float() + beta * (l_early.float() - l_final.float())
+            l_combined = l_final + beta * (l_early.float() - l_final)
 
         nid = int(l_combined.argmax(dim=-1).item())
         gids.append(nid)
