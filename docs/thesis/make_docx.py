@@ -86,6 +86,7 @@ def main():
     sep_re = re.compile(r"^[═─]{5,}$")
     body_re_h1 = re.compile(r"^\d+．")
     body_re_h2 = re.compile(r"^\d+\.\d+\s")
+    body_re_h3 = re.compile(r"^\d+\.\d+\.\d+\s")
 
     in_toc = False  # False | "pending" (after 目录 heading, skip its sep) | True
     for line in lines:
@@ -139,6 +140,12 @@ def main():
             r = p.add_run(s)
             set_run_font(r, ascii_font=TNR, east_font=HEI, size=15)
             set_par_format(p, before=10, after=10)  # ≈0.5行
+            continue
+        if body_re_h3.match(s):
+            p = doc.add_paragraph()
+            r = p.add_run(s)
+            set_run_font(r, ascii_font=TNR, east_font=HEI, size=12)
+            set_par_format(p, line=1.5, before=0, after=0)  # 款、项标题：小4，段前段后0
             continue
         if body_re_h2.match(s):
             p = doc.add_paragraph()
