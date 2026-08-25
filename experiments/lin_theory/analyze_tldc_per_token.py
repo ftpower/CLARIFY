@@ -70,6 +70,49 @@ def get_topk_info(logits, tokenizer, k=5):
     return result
 
 
+def _compact_step(l_early, l_final, l_combined, y_true_id, tokenizer, step, chosen_id, k=10):
+    """Compact per-step summary: top-k per logit space + y_true logits + chosen id.
+
+    Memory fix (2026-08-25): the previous version stored full [vocab] tensors
+    (3 × ~152k floats) per step and kept all of them in `all_results` — ~36 MB
+    per sample, which OOM'd an 8 GB GPU at ~80/300 samples. Top-k + scalars are
+    ~10 KB per step.
+    """
+    e_f = l_early.float().squeeze()
+    f_f = l_final.float().squeeze()
+    c_f = l_combined.float().squeeze()
+    return {
+        "step": step,
+        "chosen_id": chosen_id,
+        "y_true_id": y_true_id,
+        "early_top10": get_topk_info(e_f, tokenizer, k=k),
+        "final_top10": get_topk_info(f_f, tokenizer, k=k),
+        "combined_top10": get_topk_info(c_f, tokenizer, k=k),
+        "yt_logits": [
+            float(e_f[y_true_id].item()),
+            float(f_f[y_true_id].item()),
+            float(c_f[y_true_id].item()),
+        ],
+    }
+
+
+def _delta_yt(s):
+    """TLDC delta (l_early - l_final) on the y_true token at this step."""
+    return s["yt_logits"][0] - s["yt_logits"][1]
+
+
+def _delta_distractor(s):
+    """TLDC delta on the final-layer argmax token (None if it is y_true itself
+    or not present in the early-layer top-10)."""
+    final_am, _, final_am_logit = s["final_top10"][0]
+    if final_am == s["y_true_id"]:
+        return None
+    early_logit = next((v for tid, _, v in s["early_top10"] if tid == final_am), None)
+    if early_logit is None:
+        return None
+    return early_logit - final_am_logit
+
+
 def classify_samples(
     model, tokenizer, test_samples, device, layer_early, rank_threshold
 ):
@@ -208,15 +251,9 @@ def analyze_tldc_per_token(
     nid = int(l_combined_0.argmax(dim=-1).item())
     gids = [nid]
 
-    # Record step 0
+    # Record step 0 (compact: top-k + scalars only — GPU-memory fix)
     steps_log.append(
-        {
-            "step": 0,
-            "l_early": l_early_0.detach().clone(),
-            "l_final": l_final_0.detach().clone(),
-            "l_combined": l_combined_0.detach().clone(),
-            "chosen_id": nid,
-        }
+        _compact_step(l_early_0, l_final_0, l_combined_0, y_true_id, tokenizer, 0, nid)
     )
 
     # ── Subsequent steps (autoregressive) ──
@@ -250,13 +287,7 @@ def analyze_tldc_per_token(
         gids.append(nid)
 
         steps_log.append(
-            {
-                "step": step,
-                "l_early": l_early.detach().clone(),
-                "l_final": l_final.detach().clone(),
-                "l_combined": l_combined.detach().clone(),
-                "chosen_id": nid,
-            }
+            _compact_step(l_early, l_final, l_combined, y_true_id, tokenizer, step, nid)
         )
 
     gen_text = tokenizer.decode(gids).strip()
@@ -292,7 +323,7 @@ def analyze_tldc_per_token(
 
 
 def print_per_step_analysis(result, entry, tokenizer, beta):
-    """Print detailed per-step analysis for one sample."""
+    """Print detailed per-step analysis for one sample (compact-step format)."""
     y_true_id = entry["y_true_id"]
     y_true_str = tokenizer.decode([y_true_id])
     question = entry["question"]
@@ -309,10 +340,25 @@ def print_per_step_analysis(result, entry, tokenizer, beta):
     baseline_gids = result["gids_bl"]
     tldc_gids = result["gids"]
 
+    def _lookup(top10, tid):
+        for t_id, _, val in top10:
+            if t_id == tid:
+                return val
+        return None
+
+    def _rank_in(top10, tid):
+        for i, (t_id, _, _) in enumerate(top10):
+            if t_id == tid:
+                return i + 1
+        return None
+
+    def _fmt(v):
+        return f"{v:>10.2f}" if v is not None else f"{'—':>10}"
+
     # Print per-step top-3 comparison
     print(f"\n{'─' * 80}")
     print(
-        f"{'Step':>5} {'Source':>10} {'Rank':>5} {'Token ID':>8} {'Token':>20} {'Logit':>10} {'Prob':>10}"
+        f"{'Step':>5} {'Source':>10} {'Rank':>5} {'Token ID':>8} {'Token':>20} {'Logit':>10}"
     )
     print(f"{'─' * 80}")
 
@@ -321,76 +367,49 @@ def print_per_step_analysis(result, entry, tokenizer, beta):
         chosen_tldc = tldc_gids[step] if step < len(tldc_gids) else None
         chosen_bl = baseline_gids[step] if step < len(baseline_gids) else None
 
-        # Compute probabilities for each source (squeeze all leading dims)
-        l_early = s["l_early"].float().squeeze()
-        l_final = s["l_final"].float().squeeze()
-        l_combined = s["l_combined"].float().squeeze()
-
-        probs_early = torch.softmax(l_early, dim=-1)
-        probs_final = torch.softmax(l_final, dim=-1)
-        probs_combined = torch.softmax(l_combined, dim=-1)
-
-        # Get top-3 from combined (what we actually decode from)
-        topk_combined = get_topk_info(s["l_combined"], tokenizer, k=3)
+        topk_combined = s["combined_top10"][:3]
 
         for rank, (tid, tok_str, logit_val) in enumerate(topk_combined):
-            # Get logit/prob from all three sources
-            logit_e = float(l_early[tid].item())
-            logit_f = float(l_final[tid].item())
-            prob_e = float(probs_early[tid].item())
-            prob_f = float(probs_final[tid].item())
-            prob_c = float(probs_combined[tid].item())
+            logit_e = _lookup(s["early_top10"], tid)
+            logit_f = _lookup(s["final_top10"], tid)
 
             marker = ""
             if tid == chosen_tldc:
-                marker = " ← TLDC ARGMAX"
+                marker += " ← TLDC ARGMAX"
+            if tid == chosen_bl:
+                marker += " ← BASELINE"
             if tid == y_true_id:
                 marker += " ★ y_true"
 
             print(
-                f"{step:>5} {'early (L20)':>10} {rank + 1:>5} {tid:>8} {tok_str:>20} {logit_e:>10.2f} {prob_e:>10.4f}{marker}"
+                f"{step:>5} {'early (L20)':>10} {rank + 1:>5} {tid:>8} {tok_str:>20} {_fmt(logit_e)}{marker}"
             )
             if rank == 0:
                 print(
-                    f"{'':>5} {'final (L27)':>10} {rank + 1:>5} {tid:>8} {tok_str:>20} {logit_f:>10.2f} {prob_f:>10.4f}"
+                    f"{'':>5} {'final (L27)':>10} {rank + 1:>5} {tid:>8} {tok_str:>20} {_fmt(logit_f)}"
                 )
                 print(
-                    f"{'':>5} {'combined':>10} {rank + 1:>5} {tid:>8} {tok_str:>20} {logit_val:>10.2f} {prob_c:>10.4f}"
+                    f"{'':>5} {'combined':>10} {rank + 1:>5} {tid:>8} {tok_str:>20} {logit_val:>10.2f}"
                 )
 
         # Show y_true info if not in top-3
         if y_true_id not in [t[0] for t in topk_combined]:
-            logit_e_yt = float(l_early[y_true_id].item())
-            logit_f_yt = float(l_final[y_true_id].item())
-            logit_c_yt = float(l_combined[y_true_id].item())
-            prob_e_yt = float(probs_early[y_true_id].item())
-            prob_f_yt = float(probs_final[y_true_id].item())
-            prob_c_yt = float(probs_combined[y_true_id].item())
+            e_yt, f_yt, c_yt = s["yt_logits"]
+            r_e = _rank_in(s["early_top10"], y_true_id)
+            r_f = _rank_in(s["final_top10"], y_true_id)
+            r_c = _rank_in(s["combined_top10"], y_true_id)
 
-            rank_early = (
-                (l_early.argsort(descending=True) == y_true_id)
-                .nonzero(as_tuple=True)[0]
-                .item()
-            )
-            rank_final = (
-                (l_final.argsort(descending=True) == y_true_id)
-                .nonzero(as_tuple=True)[0]
-                .item()
-            )
-            rank_combined = (
-                (l_combined.argsort(descending=True) == y_true_id)
-                .nonzero(as_tuple=True)[0]
-                .item()
-            )
+            def _r(v):
+                return f"{v:>5}" if v is not None else f"{'>10':>5}"
 
             print(
-                f"{step:>5} {'early (L20)':>10} {rank_early + 1:>5} {y_true_id:>8} {y_true_str:>20} {logit_e_yt:>10.2f} {prob_e_yt:>10.4f} ★ y_true (off-list)"
+                f"{step:>5} {'early (L20)':>10} {_r(r_e)} {y_true_id:>8} {y_true_str:>20} {e_yt:>10.2f} ★ y_true (off-list)"
             )
             print(
-                f"{'':>5} {'final (L27)':>10} {rank_final + 1:>5} {y_true_id:>8} {y_true_str:>20} {logit_f_yt:>10.2f} {prob_f_yt:>10.4f}"
+                f"{'':>5} {'final (L27)':>10} {_r(r_f)} {y_true_id:>8} {y_true_str:>20} {f_yt:>10.2f}"
             )
             print(
-                f"{'':>5} {'combined':>10} {rank_combined + 1:>5} {y_true_id:>8} {y_true_str:>20} {logit_c_yt:>10.2f} {prob_c_yt:>10.4f}"
+                f"{'':>5} {'combined':>10} {_r(r_c)} {y_true_id:>8} {y_true_str:>20} {c_yt:>10.2f}"
             )
 
         # Divider between steps
@@ -404,61 +423,42 @@ def print_per_step_analysis(result, entry, tokenizer, beta):
 
     for s in steps:
         step = s["step"]
-        l_early = s["l_early"].float().squeeze()
-        l_final = s["l_final"].float().squeeze()
-        l_combined = s["l_combined"].float().squeeze()
+        delta_yt = _delta_yt(s)
 
-        # TLDC signal: delta = l_early - l_final
-        delta = l_early - l_final
-
-        # Effect on y_true
-        delta_yt = float(delta[y_true_id].item())
-        logit_early_yt = float(l_early[y_true_id].item())
-        logit_final_yt = float(l_final[y_true_id].item())
-        logit_combined_yt = float(l_combined[y_true_id].item())
-
-        # Effect on the argmax of final layer (the "distractor")
-        final_argmax_id = int(l_final.argmax().item())
-        final_argmax_str = tokenizer.decode([final_argmax_id])
-        delta_distractor = float(delta[final_argmax_id].item())
-
-        # Effect on the argmax of combined
-        combined_argmax_id = int(l_combined.argmax().item())
-        combined_argmax_str = tokenizer.decode([combined_argmax_id])
-
-        # Who benefits from TLDC?
-        topk_combined_ids = [
-            t[0] for t in get_topk_info(s["l_combined"], tokenizer, k=5)
-        ]
-        topk_final_ids = [t[0] for t in get_topk_info(s["l_final"], tokenizer, k=5)]
+        final_argmax_id, final_argmax_str, _ = s["final_top10"][0]
+        combined_argmax_id, combined_argmax_str, _ = s["combined_top10"][0]
+        _, early_argmax_str, _ = s["early_top10"][0]
 
         print(f"\n  Step {step}:")
-        print(f"    L20  argmax: '{tokenizer.decode([int(l_early.argmax().item())])}'")
+        print(f"    L20  argmax: '{early_argmax_str}'")
         print(f"    L27  argmax: '{final_argmax_str}'")
         print(f"    TLDC argmax: '{combined_argmax_str}'")
 
+        e_yt, f_yt, c_yt = s["yt_logits"]
         print(f"    TLDC delta on y_true ('{y_true_str}'):      {delta_yt:+.2f}")
         print(
-            f"      → L20 logit={logit_early_yt:.2f}, L27 logit={logit_final_yt:.2f}, combined={logit_combined_yt:.2f}"
+            f"      → L20 logit={e_yt:.2f}, L27 logit={f_yt:.2f}, combined={c_yt:.2f}"
         )
 
+        delta_distractor = _delta_distractor(s)
         if final_argmax_id != y_true_id:
-            print(
-                f"    TLDC delta on distractor ('{final_argmax_str}'): {delta_distractor:+.2f}"
-            )
-            logit_e_d = float(l_early[final_argmax_id].item())
-            logit_f_d = float(l_final[final_argmax_id].item())
-            logit_c_d = float(l_combined[final_argmax_id].item())
-            print(
-                f"      → L20 logit={logit_e_d:.2f}, L27 logit={logit_f_d:.2f}, combined={logit_c_d:.2f}"
-            )
+            if delta_distractor is not None:
+                print(
+                    f"    TLDC delta on distractor ('{final_argmax_str}'): {delta_distractor:+.2f}"
+                )
+            else:
+                print(
+                    f"    TLDC delta on distractor ('{final_argmax_str}'): not in L20 top-10"
+                )
 
         # Determine: push y_true up or push distractor down?
-        if abs(delta_yt) > 0.01 or abs(delta_distractor) > 0.01:
+        if abs(delta_yt) > 0.01:
             if delta_yt > 0 and final_argmax_id != y_true_id:
                 print(f"    → TLDC PUSHES UP y_true (+{delta_yt:.2f})")
-            if delta_distractor < 0 and final_argmax_id != y_true_id:
-                print(f"    → TLDC PUSHES DOWN distractor ({delta_distractor:+.2f})")
+            elif delta_yt < 0:
+                print(f"    → TLDC PUSHES DOWN y_true ({delta_yt:+.2f})")
+        if delta_distractor is not None and delta_distractor < -0.01 and final_argmax_id != y_true_id:
+            print(f"    → TLDC PUSHES DOWN distractor ({delta_distractor:+.2f})")
 
         # Check if TLDC flipped something
         if final_argmax_id != combined_argmax_id:
@@ -469,19 +469,14 @@ def print_per_step_analysis(result, entry, tokenizer, beta):
     # ── Net effect verdict ──
     print(f"\n{'─' * 80}")
     print("NET EFFECT (across all steps):")
-    yt_deltas = []
-    distractor_deltas = []
-    for s in steps:
-        l_early = s["l_early"].float().squeeze()
-        l_final = s["l_final"].float().squeeze()
-        delta = l_early - l_final
-        yt_deltas.append(float(delta[y_true_id].item()))
-        final_am = int(l_final.argmax().item())
-        if final_am != y_true_id:
-            distractor_deltas.append(float(delta[final_am].item()))
-
-    mean_yt_delta = np.mean(yt_deltas)
-    mean_dist_delta = np.mean(distractor_deltas) if distractor_deltas else 0.0
+    yt_deltas = [_delta_yt(s) for s in steps]
+    distractor_deltas = [
+        _delta_distractor(s)
+        for s in steps
+        if s["final_top10"][0][0] != y_true_id and _delta_distractor(s) is not None
+    ]
+    mean_yt_delta = float(np.mean(yt_deltas))
+    mean_dist_delta = float(np.mean(distractor_deltas)) if distractor_deltas else 0.0
     print(f"  Mean TLDC delta on y_true:      {mean_yt_delta:+.2f}")
     print(f"  Mean TLDC delta on distractor:   {mean_dist_delta:+.2f}")
     if mean_yt_delta > 0 and mean_dist_delta < 0:
@@ -617,13 +612,10 @@ def main():
     for r in all_results:
         if r["subset"] == "know_wrong":
             for s in r["steps"]:
-                l_early = s["l_early"].float().squeeze()
-                l_final = s["l_final"].float().squeeze()
-                delta = l_early - l_final
-                all_yt_deltas.append(float(delta[r["y_true_id"]].item()))
-                final_am = int(l_final.argmax().item())
-                if final_am != r["y_true_id"]:
-                    all_dist_deltas.append(float(delta[final_am].item()))
+                all_yt_deltas.append(_delta_yt(s))
+                dd = _delta_distractor(s)
+                if dd is not None:
+                    all_dist_deltas.append(dd)
 
     print(f"\n  All KW samples (n={len(kw)}):")
     print(f"  Mean TLDC delta on y_true:       {np.mean(all_yt_deltas):+.2f}")
@@ -634,13 +626,10 @@ def main():
         corrected_dist = []
         for r in corrected_kw:
             for s in r["steps"]:
-                l_early = s["l_early"].float().squeeze()
-                l_final = s["l_final"].float().squeeze()
-                delta = l_early - l_final
-                corrected_yt.append(float(delta[r["y_true_id"]].item()))
-                final_am = int(l_final.argmax().item())
-                if final_am != r["y_true_id"]:
-                    corrected_dist.append(float(delta[final_am].item()))
+                corrected_yt.append(_delta_yt(s))
+                dd = _delta_distractor(s)
+                if dd is not None:
+                    corrected_dist.append(dd)
 
         print(f"\n  Corrected KW only (n={len(corrected_kw)}):")
         print(f"  Mean TLDC delta on y_true:       {np.mean(corrected_yt):+.2f}")
@@ -683,13 +672,10 @@ def main():
         yt, dist = [], []
         for r in group:
             for s in r["steps"]:
-                l_early = s["l_early"].float().squeeze()
-                l_final = s["l_final"].float().squeeze()
-                delta = l_early - l_final
-                yt.append(float(delta[r["y_true_id"]].item()))
-                final_am = int(l_final.argmax().item())
-                if final_am != r["y_true_id"]:
-                    dist.append(float(delta[final_am].item()))
+                yt.append(_delta_yt(s))
+                dd = _delta_distractor(s)
+                if dd is not None:
+                    dist.append(dd)
         return yt, dist
 
     print(f"\n  ── Group mechanism table (mean ± std; push-up = Δ_y_true>0 rate) ──")
@@ -753,19 +739,13 @@ def main():
         }
         steps_out = []
         for s in r["steps"]:
-            l_early = s["l_early"].float().squeeze()
-            l_final = s["l_final"].float().squeeze()
-            delta = l_early - l_final
-            final_am = int(l_final.argmax().item())
             steps_out.append(
                 {
                     "step": s["step"],
                     "chosen_id": s["chosen_id"],
-                    "delta_yt": float(delta[r["y_true_id"]].item()),
-                    "final_argmax_id": final_am,
-                    "delta_distractor": (
-                        float(delta[final_am].item()) if final_am != r["y_true_id"] else None
-                    ),
+                    "delta_yt": _delta_yt(s),
+                    "final_argmax_id": s["final_top10"][0][0],
+                    "delta_distractor": _delta_distractor(s),
                 }
             )
         entry_out["steps"] = steps_out
