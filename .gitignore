@@ -19,3 +19,6 @@ docs/*
 __pycache__/
 *.pyc
 *.log
+# local HF datasets cache symlink (sandbox workaround)
+.cache/
+!docs/auroc-hallucination-detection.md

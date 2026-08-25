@@ -91,6 +91,49 @@ def compute_early_exit_logits(h, ln_final, W_U, b_U):
     return logits
 
 
+def clopper_pearson(k, n, alpha=0.05):
+    """Exact 95% CI for a binomial proportion (Clopper-Pearson), pure Python.
+
+    No scipy dependency. Returns (lo, hi).
+    """
+    from math import comb
+
+    if n == 0:
+        return (0.0, 0.0)
+    if k == 0:
+        return (0.0, 1 - (alpha / 2) ** (1.0 / n))
+    if k == n:
+        return ((alpha / 2) ** (1.0 / n), 1.0)
+
+    def _cdf_le_k(p):
+        # P(X <= k) for X ~ Binomial(n, p)
+        return sum(comb(n, i) * p**i * (1 - p) ** (n - i) for i in range(k + 1))
+
+    def _sf_ge_k(p):
+        # P(X >= k) = 1 - P(X <= k-1); increasing in p
+        return 1.0 - sum(comb(n, i) * p**i * (1 - p) ** (n - i) for i in range(k))
+
+    # lower bound: solve P(X >= k) = alpha/2 (increasing fn)
+    a, b = 0.0, 1.0
+    for _ in range(100):
+        m = (a + b) / 2
+        if _sf_ge_k(m) < alpha / 2:
+            a = m
+        else:
+            b = m
+    lo = (a + b) / 2
+    # upper bound: solve P(X <= k) = alpha/2 (decreasing fn)
+    a, b = 0.0, 1.0
+    for _ in range(100):
+        m = (a + b) / 2
+        if _cdf_le_k(m) > alpha / 2:
+            a = m
+        else:
+            b = m
+    hi = (a + b) / 2
+    return (lo, hi)
+
+
 def tldc_greedy_generate(
     model,
     tokenizer,
@@ -216,12 +259,20 @@ def main():
         "--betas",
         type=float,
         nargs="*",
-        default=[0.1, 0.3, 0.5, 0.7, 0.9],
-        help="Beta values to sweep (higher = more weight to early layer)",
+        default=[0.01, 0.03, 0.05, 0.08, 0.10, 0.15, 0.20],
+        help="Beta values to sweep (higher = more weight to early layer). "
+        "Defaults cover the historically effective small-beta range 0.01-0.10 "
+        "plus 0.15/0.20 as the upper shoulder (2026-08-25 review).",
     )
     parser.add_argument("--seed_cal", type=int, default=42)
     parser.add_argument("--seed_test", type=int, default=123)
     parser.add_argument("--output_dir", type=str, default=None)
+    parser.add_argument(
+        "--save_samples",
+        action="store_true",
+        help="Also save per-sample details (rank/subset + per-beta correctness) "
+        "to s14_tldc_samples.json for post-hoc analysis.",
+    )
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -395,10 +446,28 @@ def main():
         "betas": {},
     }
 
+    # Per-sample records (for --save_samples): one entry per sample, all beta flags
+    per_sample = {
+        "config": {
+            "n_test": args.n_test,
+            "seed_test": args.seed_test,
+            "rank_threshold": args.rank_threshold,
+        },
+        "samples": {},
+    }
+    for e in test_entries:
+        per_sample["samples"][e["sample_id"]] = {
+            "subset": e["subset"],
+            "rank": e["rank"],
+            "question": e["question"],
+            "baseline_correct": bool(e["is_correct"]),
+        }
+
     for beta in args.betas:
         print(f"\n  ── β = {beta:.1f} ──")
         correct_by_subset = defaultdict(int)
         count_by_subset = defaultdict(int)
+        beta_sample_flags = {}
 
         for e in tqdm(test_entries, desc=f"    β={beta:.1f}", leave=False):
             subset = e["subset"]
@@ -415,6 +484,8 @@ def main():
                 beta,
             )
             is_correct = check_correct_exact(gen_text, e["answers"])  # exact (High 3)
+
+            beta_sample_flags[e["sample_id"]] = bool(is_correct)
 
             if is_correct:
                 correct_by_subset[subset] += 1
@@ -439,11 +510,15 @@ def main():
             else:
                 rate, delta = 0.0, 0.0
 
+            # Clopper-Pearson 95% CI on the post-intervention rate
+            ci_lo, ci_hi = clopper_pearson(correct_by_subset[s], count_by_subset[s])
+
             beta_results[s] = {
                 "correct": correct_by_subset[s],
                 "total": count_by_subset[s],
                 "rate": rate,
                 "delta": delta,
+                "ci95": [float(ci_lo), float(ci_hi)],
             }
 
             # Print subset-specific results
@@ -452,6 +527,11 @@ def main():
                 print(f"    {s}: {r['correct']}/{r['total']} (Δ={r['delta']:+.1%})")
 
         all_results["betas"][f"beta={beta:.1f}"] = beta_results
+
+        for e in test_entries:
+            per_sample["samples"][e["sample_id"]][f"correct_beta{beta:.2f}"] = (
+                beta_sample_flags[e["sample_id"]]
+            )
 
     # ── Gate verification ──
     print(f"\n[5/5] Gate verification")
@@ -478,19 +558,42 @@ def main():
     )
 
     # Summary table
-    print(f"\n  ── Summary table ──")
-    print(f"  {'β':>6}  {'KW Δ':>8}  {'KC Δ':>8}  {'DK Δ':>8}  {'All Δ':>8}")
-    print(f"  {'─' * 6}  {'─' * 8}  {'─' * 8}  {'─' * 8}  {'─' * 8}")
+    print(f"\n  ── Summary table (Δ vs baseline; KW 95% CI in brackets) ──")
+    print(f"  {'β':>6}  {'KW Δ':>8}  {'KW 95% CI':>18}  {'KC Δ':>8}  {'DK Δ':>8}  {'All Δ':>8}")
+    print(f"  {'─' * 6}  {'─' * 8}  {'─' * 18}  {'─' * 8}  {'─' * 8}  {'─' * 8}")
     for beta in args.betas:
         key = f"beta={beta:.1f}"
         r = all_results["betas"][key]
+        kw = r["know_wrong"]
         print(
-            f"  {beta:>6.1f}  "
-            f"{r['know_wrong']['delta']:>+8.1%}  "
+            f"  {beta:>6.2f}  "
+            f"{kw['delta']:>+8.1%}  "
+            f"[{kw['ci95'][0]:.1%}, {kw['ci95'][1]:.1%}]  "
             f"{r['know_correct']['delta']:>+8.1%}  "
             f"{r['dont_know']['delta']:>+8.1%}  "
             f"{r['all']['delta']:>+8.1%}"
         )
+
+    # Statistical note (2026-08-25 review): KW baseline 0/24 is a DEFINED value
+    # (KW = rank<=thr AND greedy-wrong), not a sampled proportion. Correct H0 is
+    # "intervention has zero effect" -> p_rescue = 0 -> P(obs >= 1 rescue) = 0.
+    # Any k>0 rescue therefore rejects 'absolutely no effect'; what remains is
+    # estimating the effect size (CI above) — not a Fisher-style proportion test.
+    print(
+        f"\n  ── Statistical note (2026-08-25) ──"
+    )
+    print(
+        f"  KW baseline 0/{len(kw)} is a DEFINED value (KW = greedy-wrong), not sampled."
+    )
+    print(
+        f"  Under H0 'intervention has zero effect' (p=0), P(any rescue)=0 → "
+        f"any k>0 rescue rejects 'no effect'; effect size is given by the CI above."
+    )
+    print(
+        f"  Verdict rule: if the best small-β KW CI lower bound stays > 0 across "
+        f"two seeds (123/456), TLDC has a real (if small) effect on KW; decide on "
+        f"practical value by the point estimate vs the 5% bar."
+    )
 
     # Overall verdict
     n_pass = sum([d2_pass, d3_pass, d5_pass])
@@ -540,6 +643,12 @@ def main():
     with open(out_path, "w") as f:
         json.dump(output, f, indent=2, ensure_ascii=False)
     print(f"\nSaved to {out_path}")
+
+    if args.save_samples:
+        samples_path = output_dir / "s14_tldc_samples.json"
+        with open(samples_path, "w") as f:
+            json.dump(per_sample, f, indent=2, ensure_ascii=False)
+        print(f"Saved per-sample details to {samples_path}")
 
 
 if __name__ == "__main__":
