@@ -44,6 +44,11 @@
     - **判读：TLDC 对 KW 有真实效应**（双 seed 方向全 β 一致 + 剂量-响应 + pooled CI 排除零，β=0.05 双 seed 各自 CI 下界均>0）——「绝对零效应」定案排除；**但无单一 β 同时满足「双 seed KW CI 下界>0 + KC 损失<5%」**（β=0.03 pooled KC -4.0% ✓ 但 seed123 KW CI 下界 0.0%）→ **中间态偏有效：效应真实但昂贵**
     - **Seed 异质是实质的**：β=0.03 时 seed456「救 10 毁 1」vs seed123「救 1 毁 5」——KC/DK 响应本身随 seed 变化，非计数噪声。per-token 机制分析（`analyze_tldc_per_token.py` 已修截断/exact/rank 三处 bug + 扩展 KC/DK 组统计）负责定案「不对称惩罚」是否成立
     - 附带修复：`validate_s14_tldc.py` summary 表 key `f"beta={beta:.1f}"` 碰撞（0.05/0.08/0.10/0.15 共 key，JSON 只存最后一个）→ 改 `.2f`；seed=456 起输出表可信，seed=123 判读数据从 per-sample 存档重建
+  - **per-token 机制分析定案（2026-08-25，β=0.03，seed=123，修复后脚本）**：
+    - ⚠️ 第一轮发现并修复新混淆变量：`analyze_tldc_per_token.py` 用 logit lens 重算 l_final，GPU cublas 对 [1,1,d] 与 [1,seq,d] matmul 舍入不同 → 13.5% 步级 argmax 不一致（CPU 对照 0/4 证实）；91% 轨迹分叉（689/756）为伪影驱动，唯一 KW 救回即伪影。修复：l_final 改用模型真实 logits（validate 脚本本就正确）→ 前缀相同步残留不一致 0.18%（8/4459）。**双 seed 统计结论不受影响**
+    - **Q1「不对称惩罚」证伪**：~99% 步骤 push-down final 层 argmax（无论对错）；Δ_y_true 全组为负（早期层对所有 token 更"冷"）；KC broken vs kept 的 Δ 分布无差异（Δyt -8.95 vs -10.32；Δdist -15.09 vs -16.66）→ 惩罚是**对称的**、无正确性感知——theory §4 的「不对称惩罚 over-hype」机制不成立，KC 代价剂量响应即其直接后果
+    - **Q2 救回机制**：唯一 KW 救回发生在 step 3 轨迹分叉（step 0-2 与 baseline 相同）；step-0 翻转全样本仅 10/300 且无一例 y_true 上位 → 救回 = greedy 解码对 β 扰动的**混沌放大**，非 rank-1 恢复 → 与定理 2（上界≈0 只约束单步恢复类增益）不矛盾，张力解除
+    - **TLDC 最终定性**：统计上真实的 KW 弱正效应（双 seed CI 排除零）+ 机制上不可控的轨迹扰动 → **按机制证据定案关闭**；论文定位为「推理时扰动探索的机制注脚」（为推理时干预界限提供机制级佐证）。seed456 per-token 复跑已排期（验证救回均为分叉型 + 解释 seed 异质：机制差异 vs 纯轨迹运气）
 
 ---
 
