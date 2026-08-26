@@ -22,3 +22,8 @@ __pycache__/
 # local HF datasets cache symlink (sandbox workaround)
 .cache/
 !docs/auroc-hallucination-detection.md
+!docs/evaluation-protocol.md
+!docs/intervention-methods-tried.md
+!docs/theory-intervention-failure.md
+!docs/llm-coding-theory.md
+!docs/phase24-kl-tradeoff.md

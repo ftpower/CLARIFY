@@ -1,7 +1,14 @@
 # 当前计划（行动清单）
 
 > 每次会话开始/结束读写本文件。归档计划在 `docs/phase*.md`，不在此列。
-> 最后更新：2026-08-25
+> 最后更新：2026-08-26
+
+## 今日进度（2026-08-26：天花板措辞修正 + 首 token 代理理论审计）
+
+1. **TriviaQA 0.77 措辞修正**："任务天花板"统一改为「1.7B 上的可能天花板（规模维度未验证，8B 干净协议重跑待定）」——筛选无增益只证明 1.7B 上信号饱和，规模是独立维度（共 8 文件：project-state ×2、plans ×5、code-review ×1、auroc 教学文档 ×2、开题草稿 txt + docx 重生成、率失真框架 ×2）
+2. **首 token 秩代理理论审计（新增，理论已写）**：`theory-intervention-failure.md` §1.2.1——功能词首 token 先验高 → rank 无条件小 → 假知道 α>0（与模型规模无关）；检测 AUROC 标签不受影响，但 KW 子集与 rank 筛选实验受污染，"TriviaQA 筛选无增益"结论可能被污染掩盖。**审计实验列入待办（不阻塞开题）**
+3. **评测/复核协议文档化**：新建 `docs/evaluation-protocol.md`——统一评测协议 9 条（每条对应一个实锤 bug）+ 8 点复核清单（预筛查统计 17/17 全命中）+ 执行流程与自查清单 + 协议边界（首 token 代理审计等设计层检查）
+4. **推理时干预方法清单文档化**：新建 `docs/intervention-methods-tried.md`——10+ 范式按三类译码器归类（缩写→英文全称→中文全称→阶段→结果/状态），含 ⚠️ 作废/⏰ 待复核/定案关闭标注；记录 TLDC 全称不一致（chapter1 旧草稿 "Truncated Layer-wise Delta Correction" vs 现行 "Token-Level Dynamic Contrast"，待重写时修正）
 
 ## 今日进度（2026-08-25 晚场：TLDC 机制定案 + 开题报告 1-8 章）
 
@@ -24,7 +31,7 @@
 
 **完成（commit `d9e0c1d` / `8cc56f0` / `2ea18c5`）**：
 1. P0 三项代码修复全部落地：`format_prompt` 截断上下文保 Question（实测 prompt 中位 542、max 1013、0 截断）、truth direction 5 折 CV（C2+8B，删符号翻转）、标签全切 exact（词边界版）；附带 held-out `--n_val` 选参（λ sweep 改在 val 上选 epoch）、训练/评估 1024 窗口统一、TLDC rank 1-indexed、D2 rank bug 修复、`.gitignore` 白名单纳入论文文档
-2. 重跑结果：**检测** truth direction 0.7564（L18）/ LR probe 0.7708（L26）/ 表面特征 0.61-0.63 —— TriviaQA 天花板实锤，0.9066 作废；**TLDC** D2 证伪（L27 秩优于 L20，KW 22/24）只否 rank 恢复假说；KW Δ +8.3%（2/24，CI [1%,27%]）弱正信号——⚠️ 2026-08-25 复审撤回"干预线关闭"（检验模型用错 + D2 与惩罚机制无关），待大样本定案；**JS/LR**（HellaSwag 0.936 不迁移）
+2. 重跑结果：**检测** truth direction 0.7564（L18）/ LR probe 0.7708（L26）/ 表面特征 0.61-0.63 —— TriviaQA 0.77 为 1.7B 上的可能天花板，0.9066 作废；**TLDC** D2 证伪（L27 秩优于 L20，KW 22/24）只否 rank 恢复假说；KW Δ +8.3%（2/24，CI [1%,27%]）弱正信号——⚠️ 2026-08-25 复审撤回"干预线关闭"（检验模型用错 + D2 与惩罚机制无关），待大样本定案；**JS/LR**（HellaSwag 0.936 不迁移）
 3. **检测叙事重构（B）**：开题框架按「任务依赖性」全面修订（14 处），定理 2 上界收紧 ≈0（rank 增益传输），创新点 3 重写为「上界收紧 + 协议修复方法论」
 4. 新脚本：`detect_js_lr_cv.py`、`detect_lr_probe_cv.py`（干净 CV 协议，已入库）
 
@@ -34,7 +41,7 @@
 1. **TLDC"关闭"结论撤回**：复审发现昨日用 D2 证伪关闭 TLDC 是逻辑错误——D2 检验的「rank 恢复」假说 ≠ TLDC 真实机制（theory §4.2-4.4：不对称惩罚 over-hype，非 rank 机制）；且 Fisher p≈0.49 用错检验模型（0/24 基线是定义值，p=0 下观测 2/24 概率为 0）。KW Δ +8.3%（2/24）95% CI [1.0%, 27.0%]，β=0.1 时 KW/DK/All 全 Δ≥0、KC 仅 -1/25 → **弱正信号，待大样本定案**
 2. 同步修订：`code-review-2026-08-24.md`（重审节）、`project-state.md`（核心指标/已完成/教训）、`plans/current.md`
 3. `validate_s14_tldc.py` 升级：β 默认覆盖 {0.01-0.20}、Clopper-Pearson CI 输出、per-sample 存档（--save_samples）
-4. **检测知识筛选验证完成**（`detect_lr_probe_rankfilter.py`，n=200 seed=42）：rank≤50 子集 best **0.7664**（L16）≈ 全样本 0.7708（持平）；rank≤20 0.7869±0.147（+0.016 不显著）；rank≤100 0.7172；joint 全降 → **TriviaQA 上知识筛选无增益，0.77 确认任务天花板**（对比 HellaSwag 筛选 +0.19）；检测叙事「任务依赖性」保持并获机制级证据
+4. **检测知识筛选验证完成**（`detect_lr_probe_rankfilter.py`，n=200 seed=42）：rank≤50 子集 best **0.7664**（L16）≈ 全样本 0.7708（持平）；rank≤20 0.7869±0.147（+0.016 不显著）；rank≤100 0.7172；joint 全降 → **TriviaQA 上知识筛选无增益，0.77 为 1.7B 上的可能天花板**（规模维度未验证，8B 重跑待定；对比 HellaSwag 筛选 +0.19）；检测叙事「任务依赖性」保持并获机制级证据
 5. 新增教学文档 `docs/auroc-hallucination-detection.md`（AUROC 原理手算示例，全部数字验证过；含知识筛选一节，注意 TriviaQA 无增益对照）
 6. **commit `2a235d7`**（8 文件：4 文档 + 3 脚本 + .gitignore）——⚠️ **未 push**
 
@@ -46,7 +53,7 @@
 
 - [x] **1. TriviaQA 检测 rank 筛选验证（已完成，2026-08-25 下午）** ≈20-40 分钟
   - 结果：rank≤50 子集 best **0.7664**（L16）≈ 全样本 0.7708（持平）；rank≤20 0.7869±0.147（+0.016 不显著）；rank≤100 0.7172；joint 全降
-  - 结论：**TriviaQA 上知识筛选无增益 → 0.77 确认为任务天花板**（对比 HellaSwag 筛选 +0.19；机制：TriviaQA 信号=内部状态线性方向已隐含知识信息，HellaSwag 信号=max_p 受无知污染）；检测叙事「任务依赖性」保持
+  - 结论：**TriviaQA 上知识筛选无增益 → 0.77 为 1.7B 上的可能天花板**（规模维度未验证，8B 重跑待定；对比 HellaSwag 筛选 +0.19；机制：TriviaQA 信号=内部状态线性方向已隐含知识信息，HellaSwag 信号=max_p 受无知污染）；检测叙事「任务依赖性」保持
   - 产出：`experiments/outputs/lin_theory/detect_lr_probe_rankfilter.json`
   ```bash
   python experiments/lin_theory/detect_lr_probe_rankfilter.py --n_samples 200 --seed 42
@@ -110,7 +117,7 @@
 - [ ] 论文第 2 章（相关工作）草稿
 
 ### 进行中 / 待决定
-- [x] **检测支柱决策（已定案）**：LR probe 重测 = 0.7708（L26）——TriviaQA 线性检测天花板实锤（truth direction 0.7564 / probe 0.7708 / 表面特征 0.63；HellaSwag 0.936 不迁移）。**叙事重构为「检测任务依赖性」**：HellaSwag（多选）达标、TriviaQA（开放生成）中等 0.77、跨任务迁移 0.54/0.66 失败——作为论文第 4/6 章的诚实 finding
+- [x] **检测支柱决策（已定案）**：LR probe 重测 = 0.7708（L26）——TriviaQA 线性检测在 1.7B 上可能已达天花板 0.77（truth direction 0.7564 / probe 0.7708 / 表面特征 0.63；HellaSwag 0.936 不迁移）。**叙事重构为「检测任务依赖性」**：HellaSwag（多选）达标、TriviaQA（开放生成）中等 0.77、跨任务迁移 0.54/0.66 失败——作为论文第 4/6 章的诚实 finding
 - [ ] 读 `docs/phase24-kl-tradeoff.md` 的两个想法，选一个做 Phase 25 设计（在 P0 修复后执行）
 - [ ] 设计 Phase 25：明确「问题形式化 / 机制假说 / 可检验预测 / 失败模式」（理论先行）
 - [ ] 决定是否用 AutoDL 跑 8B（8B 实验必须在服务器，本地 8GB 不够）
@@ -118,9 +125,10 @@
 ### 待办（实验后）
 - [ ] 论文第 2 章（方法）草稿
 - [ ] 干预闭环达成后：跨数据集/跨规模泛化验证
+- [ ] **首 token 秩代理保真度审计**（理论见 `theory-intervention-failure.md` §1.2.1）：① 答案首 token 词性分布统计（功能词占比 = 污染上限 α）② 首 token 秩划分 vs 序列级 logprob 划分一致率 ③ 若功能词首 token >20%：KW 子集与 TLDC 定位加限定语；TriviaQA rank 筛选"无增益"换序列 logprob 代理复验。本地 1.7B forward-only，不阻塞开题
 
 ### 依赖与阻塞
-- **阻塞（更新）**：检测支柱已定案（任务依赖性叙事 + 2026-08-25 筛选验证：0.77 任务天花板，非无知污染）；**Phase 24 β sweep 是唯一未重跑的头部数字**——重跑前实验章节不得引用旧 net-5；**TLDC 机制定案关闭**（KW 弱正效应统计真实但机制证伪：对称 argmax 惩罚 + 轨迹混沌，无正确性感知）——干预主线转 **Phase 25**（KL tradeoff 设计）；seed456 per-token 复跑取消
+- **阻塞（更新）**：检测支柱已定案（任务依赖性叙事 + 2026-08-25 筛选验证：0.77 为 1.7B 上的可能天花板，非无知污染；规模维度待 8B 重跑验证）；**Phase 24 β sweep 是唯一未重跑的头部数字**——重跑前实验章节不得引用旧 net-5；**TLDC 机制定案关闭**（KW 弱正效应统计真实但机制证伪：对称 argmax 惩罚 + 轨迹混沌，无正确性感知）——干预主线转 **Phase 25**（KL tradeoff 设计）；seed456 per-token 复跑取消
 - **新增（2026-08-25，论文关键，⏰ 开题结束后执行）：旧干预范式代码复核与重跑**——开题 5.2 节只写 TLDC 弱效应；Phase 4/7/9/11-16 的零效应结论（ITI/RepE/ROME/子空间/几何感知/FactCheckmate/内部稽查等 ~17 脚本，预筛查：截断 13/17、fuzzy 15/17、无 CV 17/17、符号翻转 3、lens 伪影 1）须逐一按统一清单复核+修复+重跑后方可写入论文第 5 章。清单：①截断保尾部 ②exact 标签 ③held-out/CV ④rank 1-indexed ⑤干预 l_final 用模型真实 logits ⑥参数不得在测试集选 ⑦.detach() 断梯度 ⑧无 max(auroc,1-auroc) 符号翻转。**不阻塞开题**；执行时优先代表性范式（ITI/RepE/ROME/DoLa/子空间/梯度方向各 1 个）
 - **阻塞**：干预效果 Δacc>0 未达成——所有后续（泛化、论文主体）都依赖它
 - **依赖**：8B 实验 → AutoDL 服务器可用性；本地只能跑 1.7B（8B 检测/干预数字均 in-sample 待重跑，等叙事与服务器时间安排）

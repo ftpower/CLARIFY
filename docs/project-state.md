@@ -1,7 +1,7 @@
 # CLARIFY 项目状态（单一事实源）
 
 > 本文件是项目状态的**唯一事实源**：会话开始读它、结束写它。归档细节在 `~/.claude/plans/CLARIFY/` 与 memory/，不在此重复。
-> 最后更新：2026-08-25
+> 最后更新：2026-08-26
 
 ## 项目一句话
 
@@ -11,7 +11,7 @@ LLM 幻觉检测 + 干预的完整闭环，用于硕士毕业论文。检测已�
 
 | 目标 | 状态 |
 |---|---|
-| 检测：AUROC ≥ 0.85 | ❌ **未达标（修复后，任务依赖结论已定）**：TriviaQA 最强 = LR probe L26 **0.7708**（truth direction 0.7564、表面特征 0.63）；唯一 ≥0.85 是 HellaSwag D2+max_p 0.936（5 折 CV 干净，但不迁移）→ 检测叙事重构为「任务依赖性」。**2026-08-25 补充验证**：TriviaQA rank 知识筛选（detect_lr_probe_rankfilter.py）rank≤50 子集 0.7664 ≈ 全样本 0.7708，**筛选无增益** → 0.77 确认任务天花板（对比 HellaSwag 筛选 +0.19，机制解释：TriviaQA 信号为内部状态线性方向、本身隐含知识信息；HellaSwag 信号为输出面 max_p、受无知低置信污染） |
+| 检测：AUROC ≥ 0.85 | ❌ **未达标（修复后，任务依赖结论已定）**：TriviaQA 最强 = LR probe L26 **0.7708**（truth direction 0.7564、表面特征 0.63）；唯一 ≥0.85 是 HellaSwag D2+max_p 0.936（5 折 CV 干净，但不迁移）→ 检测叙事重构为「任务依赖性」。**2026-08-25 补充验证**：TriviaQA rank 知识筛选（detect_lr_probe_rankfilter.py）rank≤50 子集 0.7664 ≈ 全样本 0.7708，**筛选无增益** → 0.77 为 1.7B 上的可能天花板（规模维度未验证，8B 干净协议重跑待定；对比 HellaSwag 筛选 +0.19，机制解释：TriviaQA 信号为内部状态线性方向、本身隐含知识信息；HellaSwag 信号为输出面 max_p、受无知低置信污染） |
 | 干预：Δ accuracy > 0，统计显著，跨模型/数据集泛化 | ❌ **未达成**（10+ 范式零效应，信息论上限已触及；TLDC **机制定案 2026-08-25**：KW 弱正效应统计真实（双 seed CI 排除零）但机制证伪——对称 argmax 惩罚 + 轨迹混沌，无正确性感知 → 按机制证据关闭，干预主线转 Phase 25） |
 | 论文闭环 | ❌ 未完成（检测叙事已重构；干预主线 = KL 反遗忘 Phase 25） |
 
@@ -50,7 +50,8 @@ LLM 幻觉检测 + 干预的完整闭环，用于硕士毕业论文。检测已�
 | 2026-08-25 TLDC 重审 | 撤回"干预线关闭"：D2 证伪只否 rank 恢复假说（theory §4 已证 TLDC 是非 rank 的惩罚机制）；Fisher p≈0.49 用错检验模型（0/24 基线是定义值，p=0 下观测 2/24 概率为 0）；KW 2/24 CI [1%,27%] 弱正信号 → 大样本定案（n=300×2 seeds 已排期）；validate_s14_tldc.py 升级（β 0.01-0.20 + CI + per-sample） |
 | 2026-08-25 TLDC 大样本定案 | n=300×2 seeds 跑完：KW 效应**真实**（pooled 2/4/7/10/10/12/12 per 135，CP95 下界 β≥0.03 起 0.8%→4.7%；双 seed 方向一致；剂量-响应）但**昂贵**（KC 损 -4.0%→-22.5% 剂量响应；无单一 β 同时满足「双 seed KW CI 下界>0 + KC<5%」）→ **中间态偏有效**；Seed 异质实质化：β=0.03 时 seed456「救 10 毁 1」vs seed123「救 1 毁 5」→ per-token 机制分析定案（analyze_tldc_per_token.py 三 bug 已修 + KC/DK 组统计扩展）；附带修 validate_s14_tldc.py summary key 碰撞（:.1f→:.2f） |
 | 2026-08-25 TLDC 机制定案 | per-token（β=0.03，seed123）发现并修复**新混淆**：lens 重算 l_final 的 cublas 舍入伪影（13.5% 步级 argmax 不一致、91% 分叉伪影驱动；修复后 0.18%）；**Q1 证伪「不对称惩罚」**：~99% 步骤对称压 final 层 argmax、KC broken/kept Δ 分布无差异 → 无正确性感知；**Q2**：唯一救回=step3 轨迹分叉（非 step-0 rank-1 恢复）→ 救回为 greedy 混沌放大，定理 2 张力解除；**TLDC 定案关闭**（统计真实但机制不可控），论文定位「推理时扰动探索的机制注脚」；seed456 per-token 复跑排期（救回均为分叉型验证 + seed 异质解释） |
-| 2026-08-25 检测筛选验证 | TriviaQA rank 知识筛选无增益（rank≤50 0.7664 ≈ 全样本 0.7708）→ **0.77 确认任务天花板**；对比 HellaSwag 筛选 +0.19（max_p 受无知污染 vs 内部状态已隐含知识信息）——任务依赖性得到机制级证据 |
+| 2026-08-25 检测筛选验证 | TriviaQA rank 知识筛选无增益（rank≤50 0.7664 ≈ 全样本 0.7708）→ **0.77 为 1.7B 上的可能天花板**（规模维度未验证，8B 待重跑）；对比 HellaSwag 筛选 +0.19（max_p 受无知污染 vs 内部状态已隐含知识信息）——任务依赖性得到机制级证据 |
+| 2026-08-26 方法论沉淀 | ① 0.77 措辞统一限定为「1.7B 上的可能天花板」（8 文件，规模维度未验证）② 首 token 秩代理保真度理论（theory-intervention-failure.md §1.2.1：功能词首 token → 假知道 α>0，审计实验列入待办）③ 评测/复核协议文档化（evaluation-protocol.md：9 条 + 8 点清单）④ 推理时干预方法清单（intervention-methods-tried.md：缩写/全称/阶段/结果）⑤ 开题 §3.3.1 增益公式符号修复 C(θ,𝒟,D)−C(θ,𝒟)（docx 已重生成） |
 
 ## 下一步（当前计划见 `plans/current.md`）
 
@@ -60,6 +61,7 @@ LLM 幻觉检测 + 干预的完整闭环，用于硕士毕业论文。检测已�
 4. **论文第 2 章（相关工作）草稿**：可并行写，不依赖实验
 4. **Phase 25（Phase 24 重跑后）**：tradeoff 设计两个想法（见 [phase24-kl-tradeoff.md](phase24-kl-tradeoff.md)）——在「防遗忘」与「干预效果」之间找平衡
 5. **跳出事后修正框架**：三个理论方向 DPC / OFDM / Rateless（见 [llm-coding-theory.md](llm-coding-theory.md) §10-12）
+6. **首 token 秩代理保真度审计（2026-08-26 新增，理论已写）**：见 [theory-intervention-failure.md](theory-intervention-failure.md) §1.2.1——功能词首 token → 假知道污染 KW 子集与 rank 筛选结论（检测 AUROC 不受影响）；审计实验在 plans 待办（本地 1.7B forward-only，不阻塞开题）
 
 ## 关键教训（方法论，每次实验前重读）
 
@@ -72,10 +74,13 @@ LLM 幻觉检测 + 干预的完整闭环，用于硕士毕业论文。检测已�
 - **数值伪影检查（2026-08-25 TLDC 机制分析）**：任何"重算 logits"路径（logit lens）都可能与模型真实 logits 存在 GPU matmul 形状相关的舍入差异（实测 13.5% 步级 argmax 不一致、CPU 0%）；干预脚本的 l_final 必须取模型输出的真实 logits，lens 只用于参考层信号——验证时用"β=0 是否严格退化 baseline"做判据
 - **机制证伪才配关闭干预线**（2026-08-25 TLDC 教训的完成形态）：统计上 CI 排除零的真实效应 ≠ 可辩护的干预——TLDC 的 KW 救回是 greedy 轨迹对扰动的混沌放大（对称惩罚 + 分叉型救回），不可控、不可解释，据此定案关闭
 - 理论先行：任何新方向先写「问题形式化 / 机制假说 / 可检验预测 / 失败模式」再动手
+- **操作代理保真度需先审计**（2026-08-26）：首 token 秩"知道"代理对功能词首 token 无条件成立（假知道 α>0），且与模型规模无关；只污染子集划分类结论（KW/TLDC/筛选），不污染检测 AUROC（标签=exact 对错）。先用词性分布 + 序列 logprob 一致率量化 α 再决定换代理（theory-intervention-failure.md §1.2.1）
 
 ## 参考索引
 
 - 理论推导：`docs/theory-intervention-failure.md`、`docs/llm-coding-theory.md`
+- 评测协议：`docs/evaluation-protocol.md`（9 条统一协议 + 8 点复核清单）
+- 干预方法速查：`docs/intervention-methods-tried.md`（已尝试的推理时干预方法：缩写/全称/阶段/结果）
 - 各阶段 plan 归档：`docs/phase*.md`
 - 技能参考：`docs/skills-reference.md`
 - 论文：`docs/thesis/`

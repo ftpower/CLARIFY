@@ -30,7 +30,7 @@
 
 - **检测 CV（1.7B, n=200, seed=42, exact 标签, 完整 prompt）**：best **L18 = 0.7564±0.0549**（fold-wise [0.736, 0.845, 0.698, 0.792, 0.711]），correct rate 39%（78/200）。旧 0.9066（in-sample + fuzzy + 52.8% 无问题 prompt）**作废**。⚠️ 低于 0.85，检测达标结论待决策（候选：phase4 JS/joint + LR 特征在修复后 TriviaQA 上 CV 重测）。
 - **JS/LR 检测重测（修复后 TriviaQA, n=200, seed=42, 5 折 CV, Pipeline scaler+LR）**：correct 39% ✓（与 C2 一致）。单特征 AUROC 全弱：max_p_last 0.563 / entropy 0.421 / top5 0.507 / max_p_L18 0.435 / js_union_top10 0.583 / js_final_top10 0.455 / attn_ffn 0.355。joint CV：all 0.607±0.067 / no_js 0.628±0.088 / js_only 0.542。**HellaSwag 的 0.936 不迁移到开放问答**——JS/max_p 等表面特征在 TriviaQA 上无判别力。
-- **LR 探测重测（修复后 TriviaQA, n=200, seed=42, 5 折 CV）**：逐层 probe 峰值 **L26 = 0.7708±0.0556**（L13 0.7705 / L19 0.7669 / L27 0.7581）；joint_all 0.728 / joint_peak+last 0.763。**TriviaQA 线性检测天花板实锤 ≈0.77**（truth direction 0.7564 / probe 0.7708 / 表面特征 0.63）。检测叙事定案：任务依赖性（HellaSwag 0.936 → TriviaQA 0.77 → 跨任务 0.54/0.66）。
+- **LR 探测重测（修复后 TriviaQA, n=200, seed=42, 5 折 CV）**：逐层 probe 峰值 **L26 = 0.7708±0.0556**（L13 0.7705 / L19 0.7669 / L27 0.7581）；joint_all 0.728 / joint_peak+last 0.763。**TriviaQA 线性检测在 1.7B 上可能已达天花板 ≈0.77**（truth direction 0.7564 / probe 0.7708 / 表面特征 0.63；规模维度未验证）。检测叙事定案：任务依赖性（HellaSwag 0.936 → TriviaQA 0.77 → 跨任务 0.54/0.66）。
 - **TLDC（修复后，n_test=100 seed=123）**：
   - 分类口径（exact）：KC 25 / KW 24 / DK 51，baseline 41.0%（旧 19.3% 为无问题 prompt 的病理值）。
   - **D2 证伪（修复 rank bug 后）**：L20 vs L27 logit lens 秩比较——KW 子集 L20 更优 **1/24**，L27 更优 **22/24**（p≈2e-5）。最终层对 y_true 的秩显著优于检测峰值层 →「插回 L20 恢复 rank」假说不成立。
