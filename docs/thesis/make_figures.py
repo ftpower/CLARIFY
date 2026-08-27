@@ -16,11 +16,14 @@ Embed into the docx via 【图:<name>:图题】 placeholders in 开题报告草�
 handled by make_docx.py.
 
 Figure inventory (chapter-5 numbering used in the proposal):
-  fig_detection_layers    图 5.1 逐层线性探测 AUROC（TriviaQA，5 折 CV）
-  fig_detection_rankfilter 图 5.2 知识筛选分组 AUROC（rank≤20/50/100）
-  fig_detection_task      图 5.3 检测任务依赖性（TriviaQA vs HellaSwag）
-  fig_tldc_dose           图 5.4 TLDC β 剂量-响应（双 seed，ΔKW/ΔKC + CP95 CI）
-  fig_tldc_bars           图 5.5 TLDC vs 基线 分组合计（β=0.05，双 seed）
+  fig_detection_layers    图 5.1 逐层线性探测 AUROC（TriviaQA，5 折 CV，1.7B/8B）
+  fig_detection_rankfilter 图 5.2 知识筛选分组 AUROC（rank≤20/50/100，1.7B）
+  fig_detection_task      图 5.3 检测任务依赖性（TriviaQA vs HellaSwag，1.7B）
+  fig_tldc_dose           图 5.4 TLDC β 剂量-响应（1.7B/8B × 双 seed，ΔKW/ΔKC + CP95 CI）
+  fig_tldc_bars           图 5.5 TLDC vs 基线 分组合计（1.7B/8B × 双 seed）
+
+2026-08-27（8B 重跑）：fig_detection_layers / fig_tldc_dose / fig_tldc_bars
+升级为 1.7B/8B 对照（数据源 experiments/outputs/lin_theory_8b/）。
   fig_lora_beta_sweep     图 5.6 KL 正则强度 β 扫描（n=100/点，各类别 EM Δ）
   fig_lora_window_kl      图 5.7 窗口 KL 前后对比（n=1000：纯 CE vs KL）
 
@@ -45,7 +48,9 @@ from scipy.stats import beta as beta_dist
 REPO = Path(__file__).resolve().parents[2]
 OUT = REPO / "docs" / "thesis" / "figures"
 L_THEORY = REPO / "experiments" / "outputs" / "lin_theory"
+L_THEORY_8B = REPO / "experiments" / "outputs" / "lin_theory_8b"
 C2_FILE = REPO / "experiments" / "phase7_three_directions" / "outputs_phase7" / "C2_truth_direction.json"
+C2_FILE_8B = L_THEORY_8B / "C2_truth_direction.json"
 PHASE4_FILE = REPO / "experiments" / "phase4_generalization" / "outputs" / "comprehensive_analysis.json"
 
 # ---------------------------------------------------------------------------
@@ -70,6 +75,8 @@ plt.rcParams.update({
 
 C_SEED123 = "#1f77b4"
 C_SEED456 = "#d62728"
+C_8B123 = "#2ca02c"
+C_8B456 = "#9467bd"
 C_GRAY = "#8c8c8c"
 C_DARK = "#222222"
 
@@ -91,36 +98,39 @@ def _load(path):
 # 1) detection
 # ---------------------------------------------------------------------------
 def fig_detection_layers():
-    """图 5.1 逐层线性探测 AUROC（TriviaQA，5 折 CV）。"""
-    print("fig_detection_layers: reading", L_THEORY / "detect_lr_probe_cv.json", "&", C2_FILE)
-    d = _load(L_THEORY / "detect_lr_probe_cv.json")
-    c2 = _load(C2_FILE)
+    """图 5.1 逐层线性探测 AUROC（TriviaQA，5 折 CV，1.7B vs 8B）。"""
+    print("fig_detection_layers: reading 1.7B & 8B detection JSONs")
+    d17 = _load(L_THEORY / "detect_lr_probe_cv.json")
+    d8 = _load(L_THEORY_8B / "detect_lr_probe_cv.json")
+    c17 = _load(C2_FILE)
+    c8 = _load(C2_FILE_8B)
 
-    layers = [p["layer"] for p in d["per_layer"]]
-    auroc = np.array([p["auroc"] for p in d["per_layer"]])
-    std = np.array([p["auroc_std"] for p in d["per_layer"]])
-
-    fig, ax = plt.subplots(figsize=(6.5, 3.5))
-    ax.plot(layers, auroc, color=C_SEED123, lw=1.6, marker="o", ms=3,
-            label="LR probe (per-layer)")
-    ax.fill_between(layers, auroc - std, auroc + std, color=C_SEED123, alpha=0.15,
-                    label="±1 std (5-fold CV)")
-    # best probe layer
-    b = d["best_layer"]
-    ax.annotate(f"best L{b} = {d['best_auroc']:.4f}",
-                xy=(b, d["best_auroc"]), xytext=(b - 16, d["best_auroc"] + 0.045),
-                arrowprops=dict(arrowstyle="->", lw=0.8, color=C_DARK),
-                fontsize=8.5)
-    # truth direction reference (single best-layer value, clean protocol)
-    ax.axhline(c2["best_auroc"], color=C_SEED456, ls="--", lw=1.2)
-    ax.text(27.5, c2["best_auroc"] + 0.008, f"truth direction L{c2['best_layer']}\n= {c2['best_auroc']:.4f}",
-            ha="right", va="bottom", fontsize=8, color=C_SEED456)
+    fig, ax = plt.subplots(figsize=(6.8, 3.8))
+    for d, c, lbl, cc in ((d17, c17, "1.7B", C_SEED123), (d8, c8, "8B", C_SEED456)):
+        layers = [p["layer"] for p in d["per_layer"]]
+        auroc = np.array([p["auroc"] for p in d["per_layer"]])
+        std = np.array([p["auroc_std"] for p in d["per_layer"]])
+        ax.plot(layers, auroc, color=cc, lw=1.6, marker="o", ms=3,
+                label=f"LR probe {lbl} (per-layer)")
+        ax.fill_between(layers, auroc - std, auroc + std, color=cc, alpha=0.12)
+        b = d["best_layer"]
+        ax.annotate(f"{lbl} best L{b} = {d['best_auroc']:.4f}",
+                    xy=(b, d["best_auroc"]), xytext=(b - 14, d["best_auroc"] + 0.055),
+                    arrowprops=dict(arrowstyle="->", lw=0.8, color=cc),
+                    fontsize=8.5, color=cc)
+        # truth direction reference (clean protocol, both scales)
+        ax.axhline(c["best_auroc"], color=cc, ls=":", lw=1.0)
+        dy = 0.010 if lbl == "1.7B" else -0.018
+        ax.text(36.4, c["best_auroc"] + dy,
+                f"truth dir {lbl} L{c['best_layer']}={c['best_auroc']:.4f}",
+                ha="right", va="bottom", fontsize=7.5, color=cc)
     ax.axhline(0.5, color=C_GRAY, ls=":", lw=1)
     ax.text(0.3, 0.505, "chance", fontsize=8, color=C_GRAY)
     ax.set_xlabel("Layer")
     ax.set_ylabel("AUROC (5-fold CV)")
-    ax.set_ylim(0.45, 0.9)
-    ax.set_xticks(range(0, 28, 2))
+    ax.set_ylim(0.45, 0.97)
+    ax.set_xlim(-0.5, 36.4)
+    ax.set_xticks(range(0, 36, 2))
     ax.legend(loc="lower right")
     fig.tight_layout()
     _save(fig, "fig_detection_layers")
@@ -272,17 +282,21 @@ def _best_beta_for_bars(seed_data):
 
 
 def fig_tldc_dose():
-    """图 5.4 TLDC β 剂量-响应（双 seed，ΔKW 左轴 / ΔKC 右轴，CP95 CI 带）。"""
-    seeds = [("seed 123", "s14_tldc_samples.json", "s14_tldc.json", C_SEED123),
-             ("seed 456", "seed456/s14_tldc_samples.json", "seed456/s14_tldc.json", C_SEED456)]
-    print("fig_tldc_dose: rebuilding from per-sample archives (verified 0-mismatch):")
+    """图 5.4 TLDC β 剂量-响应（1.7B/8B × 双 seed，ΔKW 左轴 / ΔKC 右轴，CP95 CI 带）。"""
+    seeds = [
+        ("1.7B seed 123", L_THEORY / "s14_tldc_samples.json", L_THEORY / "s14_tldc.json", C_SEED123),
+        ("1.7B seed 456", L_THEORY / "seed456/s14_tldc_samples.json", L_THEORY / "seed456/s14_tldc.json", C_SEED456),
+        ("8B seed 123", L_THEORY_8B / "seed123_8b/s14_tldc_samples.json", L_THEORY_8B / "seed123_8b/s14_tldc.json", C_8B123),
+        ("8B seed 456", L_THEORY_8B / "seed456_8b/s14_tldc_samples.json", L_THEORY_8B / "seed456_8b/s14_tldc.json", C_8B456),
+    ]
+    print("fig_tldc_dose: rebuilding from per-sample archives:")
     seed_data = []
     for label, samp, summ, color in seeds:
-        print(f"  {label}: {samp} + cross-check {summ}")
-        out, betas, base = _tldc_from_samples(L_THEORY / samp, L_THEORY / summ)
+        print(f"  {label}: {samp.parent.name}/{samp.name} + cross-check {summ.name}")
+        out, betas, base = _tldc_from_samples(samp, summ)
         seed_data.append((label, out, betas, color))
 
-    fig, ax = plt.subplots(figsize=(6.6, 3.7))
+    fig, ax = plt.subplots(figsize=(6.9, 4.0))
     ax2 = ax.twinx()
     ax2.spines["right"].set_visible(True)
     ax2.spines["top"].set_visible(False)
@@ -296,71 +310,74 @@ def fig_tldc_dose():
         kc_lo = np.array([out[("know_correct", b)]["ci95"][0] for b in betas])
         kc_hi = np.array([out[("know_correct", b)]["ci95"][1] for b in betas])
         ax.plot(xs, kw_d * 100, color=color, marker="o", ms=3.5, lw=1.5,
-                label=f"{label}: ΔKW (know-wrong rescue)")
-        ax.fill_between(xs, kw_lo * 100, kw_hi * 100, color=color, alpha=0.12)
-        ax2.plot(xs, (kc_d) * 100, color=color, marker="s", ms=3.5, lw=1.2,
-                 ls="--", label=f"{label}: ΔKC (know-correct cost)")
-        ax2.fill_between(xs, (kc_lo - 0) * 100, (kc_hi - 0) * 100, color=color, alpha=0.08)
+                label=f"{label}: ΔKW")
+        ax.fill_between(xs, kw_lo * 100, kw_hi * 100, color=color, alpha=0.10)
+        ax2.plot(xs, kc_d * 100, color=color, marker="s", ms=3.5, lw=1.2,
+                 ls="--", label=f"{label}: ΔKC")
+        ax2.fill_between(xs, (kc_lo - 0) * 100, (kc_hi - 0) * 100, color=color, alpha=0.07)
 
     ax.axhline(0, color=C_DARK, lw=0.8)
     ax2.axhline(0, color=C_DARK, lw=0.8)
     # KC cost criterion line
     ax2.axhline(-5, color=C_GRAY, ls=":", lw=1)
-    ax2.text(0.205, -6.2, "KC cost ≤5% criterion", fontsize=7.5, color=C_GRAY, ha="right")
+    ax2.text(0.205, -7.0, "KC cost ≤5% criterion", fontsize=7.5, color=C_GRAY, ha="right")
 
     ax.set_xlabel("β (TLDC perturbation strength)")
     ax.set_ylabel("Δ rate, know-wrong (pp)")
     ax2.set_ylabel("Δ rate, know-correct (pp)")
-    ax.set_ylim(-2, 14)
+    ax.set_ylim(-2, 24)
     ax2.set_ylim(-30, 8)
     ax.set_xticks([0.01, 0.03, 0.05, 0.08, 0.1, 0.15, 0.2])
     ax.set_xticklabels(["0.01", "0.03", "0.05", "0.08", "0.10", "0.15", "0.20"])
 
     h1, l1 = ax.get_legend_handles_labels()
     h2, l2 = ax2.get_legend_handles_labels()
-    ax.legend(h1 + h2, l1 + l2, loc="upper left", fontsize=7.5, ncol=2)
+    ax.legend(h1 + h2, l1 + l2, loc="upper left", fontsize=7, ncol=2)
     fig.tight_layout()
     _save(fig, "fig_tldc_dose")
 
 
 def fig_tldc_bars():
-    """图 5.5 TLDC vs 基线 分组合计（β=0.05，双 seed 面板）。"""
-    seeds = [("seed 123", "s14_tldc_samples.json", "s14_tldc.json"),
-             ("seed 456", "seed456/s14_tldc_samples.json", "seed456/s14_tldc.json")]
+    """图 5.5 TLDC vs 基线 分组合计（1.7B/8B × 双 seed 面板）。"""
+    models = [
+        ("1.7B", L_THEORY / "s14_tldc_samples.json", L_THEORY / "seed456/s14_tldc_samples.json"),
+        ("8B", L_THEORY_8B / "seed123_8b/s14_tldc_samples.json", L_THEORY_8B / "seed456_8b/s14_tldc_samples.json"),
+    ]
     print("fig_tldc_bars: rebuilding from per-sample archives")
-    seed_data = []
-    for label, samp, summ in seeds:
-        out, betas, base = _tldc_from_samples(L_THEORY / samp, L_THEORY / summ)
-        seed_data.append((label, out, base))
-    beta_str = _best_beta_for_bars(seed_data)
-    print(f"  showcase β = {beta_str} (both seeds' ΔKW CI lower bound > 0)")
-
     cats = [("KW", "know_wrong"), ("KC", "know_correct"), ("DK", "dont_know"), ("All", "all")]
 
-    fig, axes = plt.subplots(1, 2, figsize=(7.6, 3.2), sharey=True)
-    for ax, (label, out, base) in zip(axes, seed_data):
-        names = [c[0] for c in cats]
-        bl = [base[c[1]] * 100 for c in cats]
-        tl = [out[(c[1], beta_str)]["rate"] * 100 for c in cats]
-        tl_lo = [out[(c[1], beta_str)]["ci95"][0] * 100 for c in cats]
-        tl_hi = [out[(c[1], beta_str)]["ci95"][1] * 100 for c in cats]
-        x = np.arange(len(names))
-        w = 0.34
-        ax.bar(x - w / 2, bl, w, label="Baseline", color=C_GRAY, alpha=0.75)
-        ax.bar(x + w / 2, tl, w,
-               yerr=[np.array(tl) - np.array(tl_lo), np.array(tl_hi) - np.array(tl)],
-               label=f"TLDC β={beta_str}", color=C_SEED123, alpha=0.9, capsize=3,
-               error_kw=dict(lw=0.9))
-        for xi, v in zip(x, tl):
-            ax.text(xi + w / 2, v + 1.8, f"{v:.0f}", ha="center", fontsize=7.5)
-        ax.set_xticks(x)
-        ax.set_xticklabels(names)
-        ax.set_title(f"{label} (n=300)", fontsize=9)
-        ax.set_ylim(0, 112)
-        if ax is axes[0]:
-            ax.set_ylabel("Accuracy (%)")
-            ax.legend(loc="upper left", fontsize=7.5)
-    fig.suptitle("TLDC at β where both seeds' ΔKW CI lower bound > 0", fontsize=9.5, y=1.02)
+    fig, axes = plt.subplots(2, 2, figsize=(7.8, 5.6), sharey=True)
+    for row, (mlabel, s123, s456) in enumerate(models):
+        seed_data = []
+        for label, samp in (("seed 123", s123), ("seed 456", s456)):
+            out, betas, base = _tldc_from_samples(samp)
+            seed_data.append((label, out, base))
+        beta_str = _best_beta_for_bars(seed_data)
+        print(f"  {mlabel} showcase β = {beta_str} "
+              f"(both seeds' ΔKW CI lower bound > 0)")
+        for ax, (label, out, base) in zip(axes[row], seed_data):
+            names = [c[0] for c in cats]
+            bl = [base[c[1]] * 100 for c in cats]
+            tl = [out[(c[1], beta_str)]["rate"] * 100 for c in cats]
+            tl_lo = [out[(c[1], beta_str)]["ci95"][0] * 100 for c in cats]
+            tl_hi = [out[(c[1], beta_str)]["ci95"][1] * 100 for c in cats]
+            x = np.arange(len(names))
+            w = 0.34
+            ax.bar(x - w / 2, bl, w, label="Baseline", color=C_GRAY, alpha=0.75)
+            ax.bar(x + w / 2, tl, w,
+                   yerr=[np.array(tl) - np.array(tl_lo), np.array(tl_hi) - np.array(tl)],
+                   label=f"TLDC β={beta_str}", color=C_SEED123, alpha=0.9, capsize=3,
+                   error_kw=dict(lw=0.9))
+            for xi, v in zip(x, tl):
+                ax.text(xi + w / 2, v + 1.8, f"{v:.0f}", ha="center", fontsize=7.5)
+            ax.set_xticks(x)
+            ax.set_xticklabels(names)
+            ax.set_title(f"{mlabel} {label} (n=300)", fontsize=9)
+            ax.set_ylim(0, 112)
+            if ax is axes[0, 0]:
+                ax.set_ylabel("Accuracy (%)")
+                ax.legend(loc="upper left", fontsize=7.5)
+    fig.suptitle("TLDC at β where both seeds' ΔKW CI lower bound > 0", fontsize=10, y=1.02)
     fig.tight_layout()
     _save(fig, "fig_tldc_bars")
 

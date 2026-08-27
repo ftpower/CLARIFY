@@ -1,7 +1,17 @@
 # 当前计划（行动清单）
 
 > 每次会话开始/结束读写本文件。归档计划在 `docs/phase*.md`，不在此列。
-> 最后更新：2026-08-26
+> 最后更新：2026-08-27
+
+## 今日进度（2026-08-27：8B 重跑定案 ✅）
+
+1. **前置完成**：commit `bab1776`（validate_s14_tldc --model + 图系统）并 push（origin 领先 28 commit 全部上推）
+2. **8B 检测三线**（n=200 seed=42，5 折 CV，干净协议）：LR probe **0.8509@L28**（压线过 0.85，±0.071）/ truth direction 0.7976@L24 / JS-LR joint 0.680；8B 正确率 59.5% → **规模维度验证：0.77 为 1.7B 特有天花板**
+3. **TLDC 8B**（ℓ*=L28，n=300×2 seed 123/456）：KW 救回为 1.7B 的 2-3 倍（β=0.20：+19.0%/+15.6%，双 seed CI 下界均>0）、KC ≤4.1%、**β≥0.03 起双 seed 通过「KW CI 下界>0 + KC<5%」双判据**、All Δ 全 β 非负 → 定案「统计真实、随规模增强、代价可接受」；D2 8B 同样证伪秩恢复 → 机制结论不变
+4. **结果回传与归档**：服务器双 seed 备份（seed123_8b/、seed456_8b/）→ scp 回本地 → 归档 `experiments/outputs/lin_theory_8b/`（7 文件；raw outputs 走 gitignore 本地保留）
+5. **图系统升级**：make_figures.py 的图 5.1/5.4/5.5 升级为 1.7B/8B 对照（含 C2 8B 参考线、8B dose 曲线、2×2 bars 面板）；7 图重生成 + bbox 重叠检测全 NONE
+6. **开题更新**：5.1/5.2 段落 + 图题并入 8B 结论（检测压线达标、TLDC 净正效应与定位）；`开题报告草稿.docx` 重生成；auroc/code-review 文档「规模维度未验证」措辞全面更新
+7. **待办（可选补项，服务器未释放时优先）**：① 8B rank 筛选验证 ② 8B per-token 机制复核
 
 ## 今日进度（2026-08-26 晚场：实验图嵌入开题 + 8B 重跑准备）
 
@@ -79,11 +89,7 @@
 
 ## 明日待办（第一项）
 
-- [ ] **8B 重跑（服务器，明天执行；⚠️ 前置：本地 commit + push → 服务器 git pull；本次会话的 `validate_s14_tldc.py --model` 改动必须 push 上去）**：
-  1. 检测先行（拿到 8B 峰值层）：`detect_lr_probe_cv.py` / `C2_truth_direction.py` / `detect_js_lr_cv.py`（--layer_peak 23）均 `--model Qwen/Qwen3-8B --n_samples 200 --seed 42 --n_folds 5`（C2 加 `--layer -1`）
-  2. TLDC（等检测峰值层）：`validate_s14_tldc.py --model Qwen/Qwen3-8B --n_calibrate 200 --n_test 300 --layer_early <8B峰值层> --save_samples`，seed_test 123 + 456 各一次；8B 36 层 final_layer 自动适配
-  3. （可选）`detect_lr_probe_rankfilter.py --model Qwen/Qwen3-8B`：8B 规模维度验证「0.77 天花板」
-  4. 产出按现有输出目录落盘（服务器 experiments/outputs/lin_theory），8B 结果复制回本地（scp）后 make_figures.py 自动重生成对照图
+- [x] **8B 重跑（服务器）** ✅ 已完成定案（2026-08-27，见顶部「今日进度」）；结果归档 `experiments/outputs/lin_theory_8b/`。可选补项（服务器未释放时）：`detect_lr_probe_rankfilter.py --model Qwen/Qwen3-8B`（8B 筛选无增益验证）、8B per-token 机制复核
 - [ ] **SNR/LLR 探索阶段 1（新理论方向，`docs/theory-snr-llr.md`）**：先定噪声定义 A（对抗，推荐）/B → 写 `observe_snr_trajectory.py`（1.7B 本地 n≈300 只 forward，存档 logit 域 + h_ℓ + Δh_ℓ）→ 判读三分占比（塌陷型 <15% 即干预侧判停）
 - [ ] **开题剩余四项**：① 1.1 课题来源内容（用户补导师/课题组/项目信息后写）② 题目定稿（候选 #1）③ 参考文献 17→30+ 篇（外文≥1/3 已达标；补近两年高水平会议/期刊，禁教材）④ 第 6 章进入课题时间替换占位符
 - [ ] **Phase 24 β sweep 修复后重跑**（P0 最后一项，不阻塞开题）：`python experiments/lin_theory/train_lora_delta.py --mode train --n_train 200 --n_test 800 --n_val 200 --epochs 1 --kc_ce_only --kl_beta 0.3`（β∈{0.1,0.3,0.5,0.7} 各跑一次；用 `--n_val` 在 val 上选 β/epoch，test 只报告；旧 net-5 数字待此重跑确认后替换）
@@ -143,10 +149,12 @@
 - [ ] **首 token 秩代理保真度审计**（理论见 `theory-intervention-failure.md` §1.2.1）：① 答案首 token 词性分布统计（功能词占比 = 污染上限 α）② 首 token 秩划分 vs 序列级 logprob 划分一致率 ③ 若功能词首 token >20%：KW 子集与 TLDC 定位加限定语；TriviaQA rank 筛选"无增益"换序列 logprob 代理复验。本地 1.7B forward-only，不阻塞开题
 
 ### 依赖与阻塞
-- **阻塞（更新）**：检测支柱已定案（任务依赖性叙事 + 2026-08-25 筛选验证：0.77 为 1.7B 上的可能天花板，非无知污染；规模维度待 8B 重跑验证）；**Phase 24 β sweep 是唯一未重跑的头部数字**——重跑前实验章节不得引用旧 net-5；**TLDC 机制定案关闭**（KW 弱正效应统计真实但机制证伪：对称 argmax 惩罚 + 轨迹混沌，无正确性感知）——干预主线转 **Phase 25**（KL tradeoff 设计）；seed456 per-token 复跑取消
-- **新增（2026-08-25，论文关键，⏰ 开题结束后执行）：旧干预范式代码复核与重跑**——开题 5.2 节只写 TLDC 弱效应；Phase 4/7/9/11-16 的零效应结论（ITI/RepE/ROME/子空间/几何感知/FactCheckmate/内部稽查等 ~17 脚本，预筛查：截断 13/17、fuzzy 15/17、无 CV 17/17、符号翻转 3、lens 伪影 1）须逐一按统一清单复核+修复+重跑后方可写入论文第 5 章。清单：①截断保尾部 ②exact 标签 ③held-out/CV ④rank 1-indexed ⑤干预 l_final 用模型真实 logits ⑥参数不得在测试集选 ⑦.detach() 断梯度 ⑧无 max(auroc,1-auroc) 符号翻转。**不阻塞开题**；执行时优先代表性范式（ITI/RepE/ROME/DoLa/子空间/梯度方向各 1 个）
-- **阻塞**：干预效果 Δacc>0 未达成——所有后续（泛化、论文主体）都依赖它
-- **依赖**：8B 实验 → AutoDL 服务器可用性；本地只能跑 1.7B（8B 检测/干预数字均 in-sample 待重跑，等叙事与服务器时间安排）
+- **检测支柱已定案（2026-08-27 更新）**：任务依赖性叙事 + 规模维度已验证——0.77 为 1.7B 特有天花板（2026-08-25 筛选无增益 + 2026-08-27 8B 重跑 0.8509@L28 压线达标、truth direction 0.7976@L24、表面 0.680）
+- **TLDC 定案（2026-08-27 更新）**：「统计真实、随规模增强、机制不可控」——8B 双 seed 通过「KW CI 下界>0 + KC<5%」双判据（β≥0.03）、All Δ 非负（+0.3~+2.7pp）、KW 效应为 1.7B 的 2-3 倍；机制不变（D2 8B 证伪秩恢复、救回为轨迹混沌放大）→ 论文定位「推理时扰动探索的机制注脚与规模效应证据」，不作为可控干预；干预主线转 **Phase 25**（KL tradeoff 设计）；跨数据集/跨模型泛化未验证
+- **Phase 24 β sweep 是唯一未重跑的头部数字**——重跑前实验章节不得引用旧 net-5
+- **新增（2026-08-25，论文关键，⏰ 开题结束后执行）：旧干预范式代码复核与重跑**——开题 5.2 节只写 TLDC 效应；Phase 4/7/9/11-16 的零效应结论（ITI/RepE/ROME/子空间/几何感知/FactCheckmate/内部稽查等 ~17 脚本，预筛查：截断 13/17、fuzzy 15/17、无 CV 17/17、符号翻转 3、lens 伪影 1）须逐一按统一清单复核+修复+重跑后方可写入论文第 5 章。清单：①截断保尾部 ②exact 标签 ③held-out/CV ④rank 1-indexed ⑤干预 l_final 用模型真实 logits ⑥参数不得在测试集选 ⑦.detach() 断梯度 ⑧无 max(auroc,1-auroc) 符号翻转。**不阻塞开题**；执行时优先代表性范式（ITI/RepE/ROME/DoLa/子空间/梯度方向各 1 个）
+- **阻塞**：干预效果 Δacc>0 的跨数据集/跨模型泛化未达成——干预闭环的最后一环；所有后续（论文主体）都依赖它
+- **依赖**：8B 实验 ✅ 已完成（2026-08-27）；可选补项（8B rankfilter / 8B per-token 复核）依赖 AutoDL 服务器未释放；本地只能跑 1.7B
 
 ## 环境备忘（快速恢复）
 
