@@ -3,6 +3,29 @@
 > 每次会话开始/结束读写本文件。归档计划在 `docs/phase*.md`，不在此列。
 > 最后更新：2026-08-27
 
+## 今日下午计划（2026-08-27）：门控 TLDC 阶段 0（post-hoc 模拟）🎯
+
+> 理论：`docs/theory-gated-tldc.md`（问题形式化/假说 H0-H3/预测 P1-P4/失败模式 F1-F6）。目标：回答「0.85 检测器 + 门控能否超过无门控 All Δ」，判据 gated ≥ ungated +1pp 且双 seed 一致。
+
+- [ ] **0. 前置**：本地 commit → 用户 push → 服务器 `git pull`（新文件：theory-gated-tldc.md、extract_tldc_probe_scores.py、simulate_gated_tldc.py）
+- [ ] **1. 服务器提取 probe 特征**（8B forward-only，~10 分钟/seed）：
+  ```bash
+  unset HF_ENDPOINT && HF_HOME=/root/autodl-tmp/huggingface_cache python -u \
+    experiments/lin_theory/extract_tldc_probe_scores.py \
+    --model Qwen/Qwen3-8B \
+    --seed_test 123
+  ```
+  seed456 同命令换 `--seed_test 456`。产出：`experiments/outputs/lin_theory_8b/probe_scores_seed{123,456}_Qwen3-8B.json`
+- [ ] **2. 结果 scp 回本地**（两个 probe_scores JSON）
+- [ ] **3. 本地模拟**：
+  ```bash
+  python experiments/lin_theory/simulate_gated_tldc.py \
+    --pair experiments/outputs/lin_theory_8b/probe_scores_seed123_Qwen3-8B.json experiments/outputs/lin_theory_8b/seed123_8b/s14_tldc_samples.json \
+    --pair experiments/outputs/lin_theory_8b/probe_scores_seed456_Qwen3-8B.json experiments/outputs/lin_theory_8b/seed456_8b/s14_tldc_samples.json
+  ```
+- [ ] **4. 判读**：① τ 曲线 vs 无门控行 vs oracle 上界（P3 预期 s123 +3.7pp）② H1 分位分解（高置信错样本救回率是否更高）③ 判据：存在 (β,τ) 使双 seed gated ≥ ungated +1pp → 进阶段 1；否则按 F1/F2 关闭
+- [ ] **5. 阶段 1（若成立）**：validate_s14_tldc.py 加 `--gate probe`（probe 在 n_calibrate 上训练、τ 在 calibration 上选、test 只报告）→ 8B 双 seed 真跑
+
 ## 今日进度（2026-08-27：8B 重跑定案 ✅）
 
 1. **前置完成**：commit `bab1776`（validate_s14_tldc --model + 图系统）并 push（origin 领先 28 commit 全部上推）

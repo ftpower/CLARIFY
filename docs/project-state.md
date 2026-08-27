@@ -59,6 +59,7 @@ LLM 幻觉检测 + 干预的完整闭环，用于硕士毕业论文。检测已�
 ## 下一步（当前计划见 `plans/current.md`）
 
 1. ~~**8B 重跑（服务器）**~~ ✅ **已完成（2026-08-27）**。可选补项：① 8B rank 筛选验证（detect_lr_probe_rankfilter.py --model Qwen/Qwen3-8B，验证「筛选无增益」在 8B 上是否保持）② 8B per-token 机制复核（验证救回均为分叉型；论文若要引「8B 净正效应」建议补）
+2. **门控 TLDC 阶段 0（2026-08-27 下午，新方向，`docs/theory-gated-tldc.md`）**：用 0.85 检测器（问题末尾 h_L28 probe）做 detect-then-intervene 的 post-hoc 模拟——服务器提取 probe 特征（extract_tldc_probe_scores.py，~20 分钟）→ 本地 simulate_gated_tldc.py 扫 (β,τ) → 判据「双 seed gated ≥ ungated +1pp」决定是否真跑 gated 版。理论已写（H0 正交性/H1 可救性相关 + oracle 上界 +3.7pp 分析）
 2. **SNR/LLR 探索阶段 1（新理论方向，`docs/theory-snr-llr.md`）**：定噪声定义 A/B（遗留待定）→ observe_snr_trajectory.py（1.7B 本地 n≈300 只 forward，存档 logit + h_ℓ + Δh_ℓ）→ 判读三分占比（塌陷型 <15% → 干预侧判停）
 3. **开题剩余四项（下次会话优先）**：① 1.1 课题来源内容（待用户补导师/课题组信息）② 题目定稿（候选 #1 暂用）③ 参考文献 17→30+ 篇（补近两年高水平会议/期刊，禁教材）④ 第 6 章进入课题时间占位符
 4. **Phase 24 β sweep 修复后重跑**（P0 最后一项，唯一未重跑的头部数字，不阻塞开题）：β∈{0.1,0.3,0.5,0.7}，`--n_val 200` 在 val 上选 β/epoch、test 只报告
@@ -83,7 +84,7 @@ LLM 幻觉检测 + 干预的完整闭环，用于硕士毕业论文。检测已�
 
 ## 参考索引
 
-- 理论推导：`docs/theory-intervention-failure.md`、`docs/llm-coding-theory.md`
+- 理论推导：`docs/theory-intervention-failure.md`、`docs/llm-coding-theory.md`、`docs/theory-snr-llr.md`、`docs/theory-gated-tldc.md`（门控 TLDC，2026-08-27）
 - 评测协议：`docs/evaluation-protocol.md`（9 条统一协议 + 8 点复核清单）
 - 干预方法速查：`docs/intervention-methods-tried.md`（已尝试的推理时干预方法：缩写/全称/阶段/结果）
 - 各阶段 plan 归档：`docs/phase*.md`
