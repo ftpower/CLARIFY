@@ -27,3 +27,6 @@ __pycache__/
 !docs/theory-intervention-failure.md
 !docs/llm-coding-theory.md
 !docs/phase24-kl-tradeoff.md
+!docs/theory-snr-llr.md
+!docs/theory-kappa-spikiness.md
+!docs/theory-gated-tldc.md
