@@ -30,3 +30,8 @@ __pycache__/
 !docs/theory-snr-llr.md
 !docs/theory-kappa-spikiness.md
 !docs/theory-gated-tldc.md
+
+# 报告类生成文件不追踪（docx/pdf 均为生成产物；txt 源与脚本保留）
+*.docx
+*.pdf
+.pdfcheck/
