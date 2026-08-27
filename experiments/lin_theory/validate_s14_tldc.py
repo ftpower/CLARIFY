@@ -243,6 +243,13 @@ def tldc_greedy_generate(
 def main():
     parser = argparse.ArgumentParser(description="Phase 14c: TLDC decoding")
     parser.add_argument(
+        "--model",
+        type=str,
+        default="Qwen/Qwen3-1.7B",
+        help="Model repo id or local snapshot path (model_loader resolves "
+        "HF_HOME/hub cache; 8B on server: --model Qwen/Qwen3-8B)",
+    )
+    parser.add_argument(
         "--n_calibrate", type=int, default=200, help="Calibration samples"
     )
     parser.add_argument("--n_test", type=int, default=50, help="Test samples")
@@ -285,8 +292,9 @@ def main():
 
     print("=" * 64)
     print("Phase 14c: TLDC (Token-Level Dynamic Contrast)")
+    print(f"  Model: {args.model}")
     print(f"  Early layer ℓ*: L{args.layer_early}")
-    print(f"  Final layer L: L27 (last)")
+    print("  Final layer L: auto (n_layers - 1)")
     print(f"  Betas: {args.betas}")
     print(f"  n_cal={args.n_calibrate}, n_test={args.n_test}")
     print("=" * 64)
@@ -294,9 +302,9 @@ def main():
     # ── Load model ──
     print("\n[1/5] Loading model...")
     t0 = time.time()
-    model, tokenizer, W_U, b_U, ln_final = load_model_and_unembed(device)
+    model, tokenizer, W_U, b_U, ln_final = load_model_and_unembed(device, args.model)
     n_layers = model.cfg.n_layers
-    final_layer = n_layers - 1  # L27
+    final_layer = n_layers - 1  # L27 for 1.7B / L35 for 8B
     print(f"  Model: {n_layers} layers, d_model={model.cfg.d_model}")
     print(f"  Loaded in {time.time() - t0:.1f}s")
 

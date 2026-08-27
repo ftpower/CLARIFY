@@ -3,8 +3,17 @@
 > 每次会话开始/结束读写本文件。归档计划在 `docs/phase*.md`，不在此列。
 > 最后更新：2026-08-26
 
-## 今日进度（2026-08-26：天花板措辞修正 + 首 token 代理理论审计）
+## 今日进度（2026-08-26 晚场：实验图嵌入开题 + 8B 重跑准备）
 
+1. **实验图嵌入开题报告**：新建 `docs/thesis/make_figures.py`（7 张图全部从实验 JSON 自动出图：检测 ×3 / TLDC ×2 / LoRA ×2，PNG 300dpi + PDF）；`make_docx.py` 支持 `【图:文件名:图题】` 占位符；开题报告 5.1-5.3 节已嵌入 7 图 + 每图一段说明（全文约 7200+ 字）
+2. **TLDC 数据事故与修复**：检查时发现 seed123 的 `s14_tldc.json` 摘要被 08-25 16:29 的后续运行覆盖（只剩 β=0.0/0.1/0.2）；从 `s14_tldc_samples.json` per-sample 档案**无损重建**完整 7 点扫描（两 seed 均验证 0 mismatch），图脚本统一走重建路径 + CP95 Clopper-Pearson CI + 与存储摘要交叉校验
+3. **8B 数据盘点（用户确认）**：8B 实验结果未复制回本地；检测（0.89-0.93 in-sample ❌）、TLDC（run_8b_tldc.py 无输出）、LoRA（tradeoff 文档提及但文件缺失）三条线 8B 侧均无干净数据 → **需重跑 8B**
+4. **8B 重跑代码缺口修复**：`validate_s14_tldc.py` 硬编码 1.7B（`load_model_and_unembed(device)` 无 model 参数）→ 已加 `--model` 参数（默认 Qwen/Qwen3-1.7B，8B 传 Qwen/Qwen3-8B；model_loader 自动解析 HF_HOME 缓存快照）；final layer 打印改动态。检测三个脚本（detect_lr_probe_cv / detect_js_lr_cv / C2_truth_direction）已有 --model 支持，无需改
+5. **8B 重跑命令清单**已写入下方行动清单（检测先行 → TLDC，TLDC 的 layer_early 待检测给出 8B 峰值层）
+6. **图排版修复**（用户反馈驱动）：图 5.3 图例压柱 → 图例移图外右侧 + "target 0.85" 移图顶空白；图 5.6 硬编码 ylim(-30,15) 裁掉 β=0.05 的 ΔKC −31.6pp → 改数据自适应范围；全部 7 图跑统一 bbox 重叠检测（文本 vs 柱交集 >30% 报警）至 NONE；图题改简短格式（详细描述在段落中）；`figures/preview.html` 改从 txt 占位符自动同步
+7. **新理论方向建立**：`docs/theory-snr-llr.md`（245 行，自包含）——SNR/LLR 定义（C1-C4 约束、成对内外信号、别名排除、秩域诊断/LLR 域干预）、样本三分（追不上/塌陷/不确定，分类由定义给出）、可检验预测 P1-P6 + P-H1~H4、失败模式 6 条、探索路径 4 阶段 + 判停条件（塌陷型 <15% → 干预侧判停）、训练侧候选、监督-校验路线 A（线性监督矩阵，含非线性码结论）与路线 B（残差流结构适配）；阶段 1 存档清单定稿（logit 域 + h_ℓ + Δh_ℓ 一份 forward 覆盖三方向）。**阶段 0 遗留待定：噪声定义 A（对抗，推荐）vs B（含实际生成 token）**
+
+## 今日进度（2026-08-26：天花板措辞修正 + 首 token 代理理论审计）
 1. **TriviaQA 0.77 措辞修正**："任务天花板"统一改为「1.7B 上的可能天花板（规模维度未验证，8B 干净协议重跑待定）」——筛选无增益只证明 1.7B 上信号饱和，规模是独立维度（共 8 文件：project-state ×2、plans ×5、code-review ×1、auroc 教学文档 ×2、开题草稿 txt + docx 重生成、率失真框架 ×2）
 2. **首 token 秩代理理论审计（新增，理论已写）**：`theory-intervention-failure.md` §1.2.1——功能词首 token 先验高 → rank 无条件小 → 假知道 α>0（与模型规模无关）；检测 AUROC 标签不受影响，但 KW 子集与 rank 筛选实验受污染，"TriviaQA 筛选无增益"结论可能被污染掩盖。**审计实验列入待办（不阻塞开题）**
 3. **评测/复核协议文档化**：新建 `docs/evaluation-protocol.md`——统一评测协议 9 条（每条对应一个实锤 bug）+ 8 点复核清单（预筛查统计 17/17 全命中）+ 执行流程与自查清单 + 协议边界（首 token 代理审计等设计层检查）
@@ -70,6 +79,12 @@
 
 ## 明日待办（第一项）
 
+- [ ] **8B 重跑（服务器，明天执行；⚠️ 前置：本地 commit + push → 服务器 git pull；本次会话的 `validate_s14_tldc.py --model` 改动必须 push 上去）**：
+  1. 检测先行（拿到 8B 峰值层）：`detect_lr_probe_cv.py` / `C2_truth_direction.py` / `detect_js_lr_cv.py`（--layer_peak 23）均 `--model Qwen/Qwen3-8B --n_samples 200 --seed 42 --n_folds 5`（C2 加 `--layer -1`）
+  2. TLDC（等检测峰值层）：`validate_s14_tldc.py --model Qwen/Qwen3-8B --n_calibrate 200 --n_test 300 --layer_early <8B峰值层> --save_samples`，seed_test 123 + 456 各一次；8B 36 层 final_layer 自动适配
+  3. （可选）`detect_lr_probe_rankfilter.py --model Qwen/Qwen3-8B`：8B 规模维度验证「0.77 天花板」
+  4. 产出按现有输出目录落盘（服务器 experiments/outputs/lin_theory），8B 结果复制回本地（scp）后 make_figures.py 自动重生成对照图
+- [ ] **SNR/LLR 探索阶段 1（新理论方向，`docs/theory-snr-llr.md`）**：先定噪声定义 A（对抗，推荐）/B → 写 `observe_snr_trajectory.py`（1.7B 本地 n≈300 只 forward，存档 logit 域 + h_ℓ + Δh_ℓ）→ 判读三分占比（塌陷型 <15% 即干预侧判停）
 - [ ] **开题剩余四项**：① 1.1 课题来源内容（用户补导师/课题组/项目信息后写）② 题目定稿（候选 #1）③ 参考文献 17→30+ 篇（外文≥1/3 已达标；补近两年高水平会议/期刊，禁教材）④ 第 6 章进入课题时间替换占位符
 - [ ] **Phase 24 β sweep 修复后重跑**（P0 最后一项，不阻塞开题）：`python experiments/lin_theory/train_lora_delta.py --mode train --n_train 200 --n_test 800 --n_val 200 --epochs 1 --kc_ce_only --kl_beta 0.3`（β∈{0.1,0.3,0.5,0.7} 各跑一次；用 `--n_val` 在 val 上选 β/epoch，test 只报告；旧 net-5 数字待此重跑确认后替换）
 

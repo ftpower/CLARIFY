@@ -8,22 +8,35 @@ School formatting rules (per user, 2026-08-25):
   - 正文:                       宋体 小四 (12pt), 段前 0, 段后 0, 首行缩进 2 字符
   - 数字/英文:                  Times New Roman
   - 行距 1.5 (≈33 行/页), A4, 无页眉
+
+Figure markup (2026-08-26): a line of the form
+
+    【图:<figure_name>:图 5.1 图题文字】
+
+inserts docs/thesis/figures/<figure_name>.png centered at 14.5 cm width,
+followed by a centered caption paragraph (宋体 五号 10.5pt). Generate the
+figures first with make_figures.py; a missing image file aborts the build
+loudly so the txt and figures/ stay in sync.
 """
 import re
 from pathlib import Path
 
 from docx import Document
-from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
 from docx.shared import Cm, Pt, RGBColor
 
 HERE = Path(__file__).parent
 SRC = HERE / "开题报告草稿.txt"
 OUT = HERE / "开题报告草稿.docx"
+FIG_DIR = HERE / "figures"
+FIG_WIDTH_CM = 14.5
 
 HEI = "黑体"
 SONG = "宋体"
 TNR = "Times New Roman"
+
+FIG_RE = re.compile(r"^【图:(?P<file>[A-Za-z0-9_.-]+):(?P<caption>.+?)】$")
 
 
 def set_run_font(run, ascii_font=TNR, east_font=SONG, size=12, bold=False):
@@ -92,6 +105,22 @@ def main():
     for line in lines:
         s = line.strip()
         if not s:
+            continue
+        m_fig = FIG_RE.match(s)
+        if m_fig:
+            fig_path = FIG_DIR / f"{m_fig.group('file')}.png"
+            if not fig_path.exists():
+                raise SystemExit(f"[make_docx] missing figure: {fig_path} "
+                                 f"(run make_figures.py first)")
+            p = doc.add_paragraph()
+            p.add_run().add_picture(str(fig_path), width=Cm(FIG_WIDTH_CM))
+            set_par_format(p, line=1.0, before=6, after=0,
+                           align=WD_ALIGN_PARAGRAPH.CENTER)
+            c = doc.add_paragraph()
+            r = c.add_run(m_fig.group("caption"))
+            set_run_font(r, size=10.5)  # 宋体五号, Times New Roman for digits/EN
+            set_par_format(c, line=1.25, before=0, after=10,
+                           align=WD_ALIGN_PARAGRAPH.CENTER)
             continue
         if sep_re.match(s):
             if in_toc == "pending":
