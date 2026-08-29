@@ -14,7 +14,6 @@ docs/*
 !docs/plans/current.md
 !docs/dsh-usage-guide.md
 !docs/dsh-gap-checklist.md
-!docs/thesis/
 !docs/code-review-*.md
 __pycache__/
 *.pyc
@@ -35,3 +34,10 @@ __pycache__/
 *.docx
 *.pdf
 .pdfcheck/
+
+# 报告与答辩相关不追踪（2026-08-29）
+docs/thesis/
+*.pre_*.bak
+.dsh/skills/academic-check/
+# 实验输出（gated-TLDC probe 分数，30MB JSON）
+probe_scores/
