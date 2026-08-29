@@ -1,7 +1,26 @@
 # 当前计划（行动清单）
 
 > 每次会话开始/结束读写本文件。归档计划在 `docs/phase*.md`，不在此列。
-> 最后更新：2026-08-29
+> 最后更新：2026-08-29 晚场
+
+## 今日晚场进度（2026-08-29：答辩问答打磨 + 第 8 章重写定稿 + 公式字体修复 + 报告不追踪）
+
+**答辩问答记录**（`docs/thesis/答辩问答记录.md`，已 Q1-Q11）：
+1. Q1-Q9 数字全部与代码/实验核对一致（detect_js_lr_cv.json、make_figures.py、check_correct_exact、clopper_pearson、validate_s14_tldc.py、theory 文档）
+2. 补强 6 处薄弱点：Q1 补正式定义（𝒰={T:max_S d(T,S)≥0.85}、AUROC_out≤1−q̂*/2、P1/P2 与失败模式）、Q2 补带宽无关（46.8% 与 AUROC 0.68 无参）、Q4 补消融解读（joint_no_js 0.628>joint_all 0.607）、Q6 补 lens 伪影审计（13.5%→0.18%）、Q7 补 margin 条件定义
+3. 新增 Q10（课题创新性：一句话版+30-60s 展开+书面对照+3 防追问+措辞红线）、Q11（译码器 D 定义：模型输出=逐 token 分布非答案序列、C(θ,𝒟,D) 联合函数、三类译码器对应 D 三作用位置）
+
+**第 8 章重写**（`rewrite_ch8.py`，7 轮迭代 v1→v6+定稿）：
+- 定稿 4 条简洁版：① 干预泛化未验证 ② 门控校准与分布风险（误触发/漏触发）③ 推理时干预容量刻画可能存在风险（界限定理未完全验证：实证旧协议待复核+弱上界）④ 超参数敏感与过拟合
+- 用户决策链：只写未解决→预测→聚焦新干预方法风险→"容量刻画"按用户意见写入（定理 1/2 未完全验证）→简洁化→措辞规范化
+- 备份链完整：.pre_ch8.bak / _5items / _4items / _v3 / _v4 / _v5 / _v6 / _v7
+- ⚠️ 待用户 Word 确认第 8 章最终版
+
+**公式字体修复**：08-29 手改 v2 后 Word 把 42 个公式重置回 Cambria Math → `fix_math_font.py`（新脚本）229 处 → Times New Roman，0 剩余；渲染验证改用工作区 .pdfcheck/new/（教训：soffice 输出进沙箱虚拟 /tmp 会丢失，曾误查 08-28 旧 PDF）
+
+**git 策略变更（commit `7b32d15`）**：报告与答辩相关不再追踪——.gitignore 移除 docs/thesis/ 白名单，新增 docs/thesis/、*.pre_*.bak、.dsh/skills/academic-check/、probe_scores/；git rm --cached docs/thesis/（14 文件，工作区保留）；附带提交 08-29 状态同步 + analyze_gated_h1.py
+
+**⚠️ 待办**：git 未 push（7b32d15 及更早 commits）；第 8 章待 Word 确认；开题剩余（用户侧）：封面占位符 + 1.1 导师信息 + Word 更新 TOC + 排版复核
 
 ## 今日进度（2026-08-29：答辩问答记录 + 开题报告 v2 直白化与术语统一）
 
