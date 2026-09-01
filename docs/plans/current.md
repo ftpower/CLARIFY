@@ -29,7 +29,14 @@
 
 **5. 渲染验证**：LibreOffice 41 页正常（.pdfcheck/restore12/）；⚠️ soffice 默认 profile 报 "User installation could not be completed"（疑似上次中断残留锁）→ 用 `-env:UserInstallation=file://…/.pdfcheck/loprofile_r12` 绕过
 
-**⚠️ 未决/提醒**：① **TOC 目录域未更新**（Word 里右键目录→更新域）② **交叉引用审计未做**（正文其余章节若有「3.2」「3.3」字样引用需核对新编号）③ 用户 Word 侧文件与仓库 docx 同步情况存疑（旧 PDF 出现过不同姓名值）④ 公式字体、封面下划线均为用户 Word 重新保存后需复跑的项
+**6. ⚠️ Word 打开警告修复**（本会话，`docs/thesis/fix_ignorable.py`，备份 `.pre_ignorable.bak`）：
+- 症状：Word 打开报「发现无法读取的内容，是否恢复此文档的内容？」
+- 根因：restructure/restore 用 **ElementTree 全量重写 document.xml** 时，ET 只保留实际使用的前缀声明（ns0..ns6），但根元素 `mc:Ignorable="w14 w15 w16se w16cid wp14"` 属性值原样保留 → **引用未声明前缀**（OOXML markup-compatibility 规范要求 Ignorable 列出前缀必须已声明；LibreOffice 宽容不报，Word 严格校验拒绝）
+- 修复：从 `.pre_ch3.bak` 原版提取 5 个缺失 xmlns 声明补回根元素（字符串级手术，不再过 ET）+ XML 声明恢复原版格式（双引号 + standalone="yes"）
+- 验证：SAX 严格解析全部 30 条目良构、42 公式不变、第 3 章标题完整、渲染 41 页
+- 🔧 **教训（写入规程）**：docx 修改**禁止 ET 全量重写 document.xml**——会丢未使用命名空间声明并破坏 mc:Ignorable 引用；必须字符串级手术，或 ET 重写后补全声明。⚠️ 用户需在 Word 重新打开确认无警告
+
+**⚠️ 未决/提醒**：① **TOC 目录域未更新**（Word 里右键目录→更新域）② 交叉引用审计 ✅ 已做（第 4 章起 0 命中）③ 用户 Word 侧文件与仓库 docx 同步情况存疑（旧 PDF 出现过不同姓名值）④ 公式字体、封面下划线均为用户 Word 重新保存后需复跑的项 ⑤ 用户 Word 打开确认无警告后再继续编辑
 
 ## ⚠️ 报告基线切换（2026-08-30 晚）
 
