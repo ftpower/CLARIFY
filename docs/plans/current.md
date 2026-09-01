@@ -29,12 +29,13 @@
 
 **5. 渲染验证**：LibreOffice 41 页正常（.pdfcheck/restore12/）；⚠️ soffice 默认 profile 报 "User installation could not be completed"（疑似上次中断残留锁）→ 用 `-env:UserInstallation=file://…/.pdfcheck/loprofile_r12` 绕过
 
-**6. ⚠️ Word 打开警告修复**（本会话，`docs/thesis/fix_ignorable.py`，备份 `.pre_ignorable.bak`）：
-- 症状：Word 打开报「发现无法读取的内容，是否恢复此文档的内容？」
+**6. ⚠️ Word 打开警告修复**（本会话，`docs/thesis/fix_ignorable.py`，备份 `.pre_ignorable.bak`）：- 症状：Word 打开报「发现无法读取的内容，是否恢复此文档的内容？」
 - 根因：restructure/restore 用 **ElementTree 全量重写 document.xml** 时，ET 只保留实际使用的前缀声明（ns0..ns6），但根元素 `mc:Ignorable="w14 w15 w16se w16cid wp14"` 属性值原样保留 → **引用未声明前缀**（OOXML markup-compatibility 规范要求 Ignorable 列出前缀必须已声明；LibreOffice 宽容不报，Word 严格校验拒绝）
 - 修复：从 `.pre_ch3.bak` 原版提取 5 个缺失 xmlns 声明补回根元素（字符串级手术，不再过 ET）+ XML 声明恢复原版格式（双引号 + standalone="yes"）
 - 验证：SAX 严格解析全部 30 条目良构、42 公式不变、第 3 章标题完整、渲染 41 页
 - 🔧 **教训（写入规程）**：docx 修改**禁止 ET 全量重写 document.xml**——会丢未使用命名空间声明并破坏 mc:Ignorable 引用；必须字符串级手术，或 ET 重写后补全声明。⚠️ 用户需在 Word 重新打开确认无警告
+
+**7. 3.1.1~3.1.3 标题精简**（用户要求去重复「研究」二字，备份 `.pre_titles.bak`）：3.1.1 幻觉检测方法 / 3.1.2 界限刻画与机制分析 / 3.1.3 防遗忘权衡与跨规模验证；字符串级替换（各 1 处定位校验），渲染验证正文「见 3.1.1 节」引用不受影响；TOC 更新域时自动取新标题
 
 **⚠️ 未决/提醒**：① **TOC 目录域未更新**（Word 里右键目录→更新域）② 交叉引用审计 ✅ 已做（第 4 章起 0 命中）③ 用户 Word 侧文件与仓库 docx 同步情况存疑（旧 PDF 出现过不同姓名值）④ 公式字体、封面下划线均为用户 Word 重新保存后需复跑的项 ⑤ 用户 Word 打开确认无警告后再继续编辑
 
