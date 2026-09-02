@@ -2,6 +2,7 @@
 
 > 用途：快速查阅所有尝试过的推理时干预方法——英文缩写 → 英文全称 → 中文全称 → 尝试阶段 → 结果与状态。
 > 创建：2026-08-26 | 数据来源：`docs/thesis/开题报告-率失真框架.md` §6.2、`docs/theory-intervention-failure.md`、`docs/plans/current.md`
+> ⚠️ 状态注记（2026-09-04）：文中「定理 1（固定方向干预容量为零）/ 定理 2（解码器增益上界）」为自研刻画主张、真实性未验证，支撑实验复核中（详见 `docs/llm-coding-theory.md` 文首注记）；引用其结果须标注「未验证/复核中」。
 
 ---
 
@@ -47,7 +48,7 @@
 
 | 缩写 | 英文全称 | 中文全称 | 阶段 | 结果 / 状态 |
 |---|---|---|---|---|
-| — | Self-Consistency（SelfCheckGPT 式） | 自一致性（多次采样语义分歧聚合） | Phase 12-19 | 未形成干预闭环（开题列为三类典型译码器之一） |
+| — | Self-Consistency（SelfCheckGPT 式） | 自一致性（多次采样语义分歧聚合） | Phase 12-19 | 未形成干预闭环（开题列为三类典型解码器之一） |
 | — | FactCheckmate | 细粒度事实核查（检索验证式） | Phase 12-13 | 零效应（⏰ 待复核） |
 | DPO | Direct Preference Optimization | 直接偏好优化（⚠️ 属训练时方法，Phase 12-13 曾作为干预尝试） | Phase 12-13 | reward hacking（v·h+1.65，acc −0.5%） |
 

@@ -3,6 +3,8 @@
 > 从第一性原理推导：为什么 10+ 种方向-based 干预范式全部零效应，
 > 以及 TLDC (Token-Level Dynamic Contrast) 作为唯一有效方法的数学机制。
 
+> ⚠️ **状态注记（2026-09-04）**：本文所述「定理 1（固定方向干预容量为零）」「定理 2（译码器增益上界）」为本课题**自研的刻画主张，真实性未经验证**；支撑实验（10+ 范式零效应、D2 秩对比、margin 分布等）部分基于旧协议脚本，**仍处复核状态**（复核清单见 `docs/evaluation-protocol.md`，任务状态见 `docs/plans/current.md`）。复核完成前不得作为已证事实引用；开题报告未以定理形式引用（3.2.2 以「拟研究/刻画」表述），论文写作与答辩引用须保持该口径并标注「未验证/复核中」。
+
 ---
 
 ## 目录
@@ -138,6 +140,8 @@ $$\frac{\|g_{\text{param}}\|}{\text{RMS}(h)} \approx \frac{2.4}{54.5} \approx 44
 **A.5.3（层依赖性）**: L27 > L20 > L15 在 ΔlogP 上单调递增，但**所有层 Δ accuracy = 0%**。即使最优层 L27，单层干预也无法翻转 argmax。
 
 ### 2.4 定理: 固定方向干预容量为零
+
+> ⚠️ 状态注记（2026-09-04）：自研刻画主张，真实性未验证，支撑实验复核中（见文首注记）；不得作为已证定理引用。
 
 **定理 1（线性分组码的无能性）.** 令 $v \in \mathbb{R}^d$ 为不依赖于输入 $x$ 的固定方向。定义干预 $h \leftarrow h + \alpha v$。则对任意 $v$，存在 logit 空间的错误模式 $e(x)$ 使得干预无法纠正，且这类错误模式在 KW 数据集上的概率质量 > 0。
 
@@ -393,6 +397,8 @@ $$C_{\text{truth}}(\theta, \mathcal{D}) = \mathbb{P}_{x \sim \mathcal{D}_{\text{
 $$C_{\text{truth}}(\theta, \mathcal{D}, D) = \mathbb{P}_{x \sim \mathcal{D}_{\text{known}}}[y_{\text{true}} = \arg\max D \circ C_\theta(x)]$$
 
 **定理 2（译码器增益上界）.** 不修改参数 $\theta$ 的推理时译码器的容量增益受限于信道本身的软信息质量：
+
+> ⚠️ 状态注记（2026-09-04）：自研弱上界主张，无完整严格证明，真实性未验证，支撑实验复核中（见文首注记）；不得作为已证定理引用。
 
 $$C(\theta, \mathcal{D}, D) - C(\theta, \mathcal{D}) \leq \mathbb{P}_{x \in \mathcal{D}_{\text{KW}}}[\text{rank}(y_{\text{true}} | x) = 1 \text{ 在至少一个分集支路中}]$$
 
