@@ -39,6 +39,9 @@ from sklearn.preprocessing import StandardScaler
 REPO = Path(__file__).resolve().parents[2]
 OUT_DIR = REPO / "experiments" / "outputs" / "detectable_accuracy"
 COVERAGES = [1.00, 0.90, 0.80, 0.70, 0.60, 0.50]
+# 绘图用细网格（覆盖率 1.00→0.20，步长 0.01）：报告点数值仍以 COVERAGES 为准，
+# 细网格只用于绘制"准确率—覆盖率"曲线（避免图上只有 6 个折点）。
+CURVE_GRID = [round(1.00 - 0.01 * i, 2) for i in range(81)]
 N_FOLDS = 5
 
 
@@ -108,6 +111,25 @@ def risk_coverage(scores, y, coverages=COVERAGES):
     return rows
 
 
+def risk_coverage_curve(scores, y, grid=CURVE_GRID):
+    """细网格风险—覆盖率曲线（绘图用；只保留绘图所需字段，报告点见 risk_coverage）。"""
+    order = np.argsort(-scores)
+    y_sorted = y[order]
+    n = len(y)
+    rows = []
+    for c in grid:
+        k = max(1, int(round(c * n)))
+        kept = y_sorted[:k]
+        lo, hi = cp95(int(kept.sum()), k)
+        rows.append({
+            "coverage": round(float(c), 2),
+            "n_kept": k,
+            "retained_accuracy": float(kept.mean()),
+            "cp95": [lo, hi],
+        })
+    return rows
+
+
 def aurac(scores, y):
     """AURAC：准确率—覆盖率曲线下面积（覆盖率 0→1，随机基线 = 整体准确率）。"""
     order = np.argsort(-scores)
@@ -131,6 +153,7 @@ def summarize(tag, scores, y, extra=None, fold_seed=None):
         "aurac": aurac(scores, y),
         "aurac_random": base,
         "risk_coverage": rc,
+        "curve": risk_coverage_curve(scores, y),
     }
     if fold_seed is not None:
         out["auroc_fold_mean"] = mean_fold_auroc(scores, y, seed=fold_seed)
