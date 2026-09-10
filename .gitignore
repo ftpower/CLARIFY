@@ -8,10 +8,9 @@ experiments/phase1/outputs/
 experiments/phase1/outputs_*/
 进度与问题/
 思路与灵感/
+# 会话状态与计划不追踪（2026-09-10）：docs/project-state.md 与 docs/plans/current.md
+# 的内容以开题答辩进度为主，按"开题内容不入提交"的约定留在本地（文件仍在，工作流不变）
 docs/*
-!docs/project-state.md
-!docs/plans/
-!docs/plans/current.md
 !docs/dsh-usage-guide.md
 !docs/dsh-gap-checklist.md
 !docs/code-review-*.md
