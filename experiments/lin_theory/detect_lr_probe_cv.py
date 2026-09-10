@@ -168,6 +168,24 @@ def main():
         )
         return cross_val_score(pipe, X, y, cv=skf, scoring="roc_auc")
 
+    def _oof_scores(X):
+        """折外逐样本 P(correct)：与 _probe_cv 完全相同的折划分（random_state=0）。
+
+        供下游"可检测准确率 / 风险—覆盖率"评估使用（阈值无关指标之外的
+        工作点指标必须建立在折外分数上，见 docs/evaluation-protocol.md）。
+        """
+        oof = np.zeros(len(y), dtype=np.float64)
+        for tr, te in skf.split(X, y):
+            pipe = Pipeline(
+                [
+                    ("scaler", StandardScaler()),
+                    ("lr", LogisticRegression(max_iter=3000, class_weight="balanced")),
+                ]
+            )
+            pipe.fit(X[tr], y[tr])
+            oof[te] = pipe.predict_proba(X[te])[:, 1]
+        return oof
+
     # Per-layer probes
     print(f"\n  Per-layer LR probe:")
     print(f"  {'Layer':>6s}  {'AUROC±std':>14s}")
@@ -184,6 +202,15 @@ def main():
 
     best = max(per_layer, key=lambda d: d["auroc"])
     print(f"\n  Best single-layer probe: L{best['layer']} = {best['auroc']:.4f}±{best['auroc_std']:.4f}")
+
+    # ── Out-of-fold per-sample scores (for detectable-accuracy / risk-coverage) ──
+    X_peak = H[best["layer"]]
+    X_all = np.concatenate([H[li] for li in range(n_layers)], axis=1)
+    oof = {
+        "peak": _oof_scores(X_peak),
+        "joint_all_layers": _oof_scores(X_all),
+    }
+    print(f"  OOF scores ready (peak L{best['layer']} + joint_all_layers)")
 
     # Joint probes
     print(f"\n  Joint probes:")
@@ -236,6 +263,23 @@ def main():
         json.dump(results, f, indent=2)
     print(f"\nSaved: {out_path}")
     print(f"Saved hidden states: {output_dir / 'detect_lr_probe_hidden.npz'}")
+
+    # 逐样本折外分数（体积小，便于带回本地做可检测准确率评估）
+    oof_path = output_dir / "detect_lr_probe_oof.json"
+    with open(oof_path, "w") as f:
+        json.dump({
+            "config": results["config"],
+            "best_layer": best["layer"],
+            "n_valid": int(len(y)),
+            "n_correct": int(y.sum()),
+            "y": [int(v) for v in y],
+            "scores_peak": [float(v) for v in oof["peak"]],
+            "scores_joint_all_layers": [float(v) for v in oof["joint_all_layers"]],
+            "fold_split_seed": 0,
+            "note": ("out-of-fold P(correct); 分层 5 折，Scaler+LR 折内拟合；"
+                     "scores_peak 对应 best_layer 单层探针"),
+        }, f, ensure_ascii=False, indent=2)
+    print(f"Saved OOF scores: {oof_path}")
 
 
 if __name__ == "__main__":
