@@ -51,8 +51,13 @@ def cp95(k, n):
     return (lo, hi)
 
 
-def oof_scores(X, y, seed=42):
-    """折外 P(correct)：分层 5 折，Scaler+LR 全部折内拟合。"""
+def oof_scores(X, y, seed=0):
+    """折外 P(correct)：分层 5 折，Scaler+LR 全部折内拟合。
+
+    seed 为**折划分**种子，需与来源实验一致：
+      - detect_lr_probe_cv.py（检测主结果）: random_state=0
+      - simulate_gated_tldc.py（门控模拟）  : random_state=TLDC seed（123/456）
+    """
     scores = np.zeros(len(y), dtype=float)
     skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=seed)
     for tr, te in skf.split(X, y):
@@ -63,6 +68,20 @@ def oof_scores(X, y, seed=42):
         clf.fit(X[tr], y[tr])
         scores[te] = clf.predict_proba(X[te])[:, 1]
     return scores
+
+
+def mean_fold_auroc(scores, y, seed=0):
+    """协议口径 AUROC：与 cross_val_score 相同——逐折算 AUROC 再取均值（非池化）。
+
+    与 detect_lr_probe_cv.py 的 `_probe_cv` 等价，用于逐层峰值层选择与结果核对。
+    """
+    skf = StratifiedKFold(n_splits=N_FOLDS, shuffle=True, random_state=seed)
+    fold_aucs = []
+    for _, te in skf.split(np.zeros(len(y)), y):
+        if len(np.unique(y[te])) < 2:
+            continue
+        fold_aucs.append(roc_auc_score(y[te], scores[te]))
+    return float(np.mean(fold_aucs)) if fold_aucs else float("nan")
 
 
 def risk_coverage(scores, y, coverages=COVERAGES):
@@ -99,7 +118,7 @@ def aurac(scores, y):
     return float(trapz(cum_acc, cov))
 
 
-def summarize(tag, scores, y, extra=None):
+def summarize(tag, scores, y, extra=None, fold_seed=None):
     base = float(y.mean())
     auroc = float(roc_auc_score(y, scores))
     rc = risk_coverage(scores, y)
@@ -108,15 +127,21 @@ def summarize(tag, scores, y, extra=None):
         "n": int(len(y)),
         "n_correct": int(y.sum()),
         "baseline_accuracy": base,
-        "auroc_oof": auroc,
+        "auroc_oof_pooled": auroc,
         "aurac": aurac(scores, y),
         "aurac_random": base,
         "risk_coverage": rc,
     }
+    if fold_seed is not None:
+        out["auroc_fold_mean"] = mean_fold_auroc(scores, y, seed=fold_seed)
+        out["fold_seed"] = fold_seed
     if extra:
         out.update(extra)
     print(f"\n=== {tag} ===")
-    print(f"n={len(y)}  基线准确率={base:.4f}  折外 AUROC={auroc:.4f}  AURAC={out['aurac']:.4f}（随机基线 {base:.4f}）")
+    fm = out.get("auroc_fold_mean")
+    print(f"n={len(y)}  基线准确率={base:.4f}  折外池化 AUROC={auroc:.4f}"
+          + (f"  折均值 AUROC={fm:.4f}（协议口径）" if fm is not None else "")
+          + f"  AURAC={out['aurac']:.4f}（随机基线 {base:.4f}）")
     print(f"{'覆盖率':>6} {'保留n':>6} {'保留准确率':>10} {'CP95':>18} {'剔除错误':>8} {'误删正确':>8}")
     for r in rc:
         print(f"{r['coverage']:>6.2f} {r['n_kept']:>6d} {r['retained_accuracy']:>10.4f} "
@@ -152,23 +177,26 @@ def load_8b_triviaqa():
     return blocks
 
 
-def load_probe_npz(path, seed=42):
-    """通用：逐层隐藏状态 npz（h_L0..h_L{n-1} + y）→ 逐层 CV 选峰值层后取折外分数。"""
+def load_probe_npz(path, fold_seed=0):
+    """通用：逐层隐藏状态 npz（h_L0..h_L{n-1} + y）→ 逐层 CV 选峰值层后取折外分数。
+
+    峰值层用**协议口径**（折均值 AUROC，与 cross_val_score 一致）选择。
+    """
     z = np.load(path, allow_pickle=True)
     y = z["y"].astype(np.int32)
     layers = sorted(int(k[3:]) for k in z.files if k.startswith("h_L"))
     per_layer = {}
     for li in layers:
-        s = oof_scores(z[f"h_L{li}"], y, seed=seed)
-        per_layer[li] = float(roc_auc_score(y, s))
+        s = oof_scores(z[f"h_L{li}"], y, seed=fold_seed)
+        per_layer[li] = mean_fold_auroc(s, y, seed=fold_seed)
     peak = max(per_layer, key=per_layer.get)
-    scores = oof_scores(z[f"h_L{peak}"], y, seed=seed)
+    scores = oof_scores(z[f"h_L{peak}"], y, seed=fold_seed)
     return scores, y, {
         "source": str(path),
         "n_layers": len(layers),
         "peak_layer": int(peak),
-        "peak_layer_auroc": per_layer[peak],
-        "layer_auroc": {int(k): v for k, v in per_layer.items()},
+        "peak_layer_auroc_fold_mean": per_layer[peak],
+        "layer_auroc_fold_mean": {int(k): v for k, v in per_layer.items()},
     }
 
 
@@ -183,10 +211,10 @@ def load_oof_json(path):
     }
 
 
-def load_1p7b_triviaqa():
+def load_1p7b_triviaqa(fold_seed=0):
     """1.7B / TriviaQA：h_L0..L27，逐层 CV 选峰值层（选择口径与主结果一致）。"""
     return load_probe_npz(REPO / "experiments" / "outputs" / "lin_theory" /
-                          "detect_lr_probe_hidden.npz")
+                          "detect_lr_probe_hidden.npz", fold_seed=fold_seed)
 
 
 def load_1p7b_hellaswag():
@@ -253,14 +281,14 @@ def main():
     blocks = load_8b_triviaqa()
     seed_rows = []
     for b in blocks:
-        b["scores"] = oof_scores(b["X"], b["y"], seed=42)
+        b["scores"] = oof_scores(b["X"], b["y"], seed=b["seed"])   # 折种子=TLDC seed（门控协议）
         seed_rows.append(summarize(f"8B / TriviaQA / seed{b['seed']} (h_L28, LR probe)",
-                                   b["scores"], b["y"],
+                                   b["scores"], b["y"], fold_seed=b["seed"],
                                    extra={"label_mismatch_vs_archive": b["label_mismatch"]}))
     Xp = np.vstack([b["X"] for b in blocks])
     yp = np.concatenate([b["y"] for b in blocks])
     sp = np.concatenate([b["scores"] for b in blocks])
-    pooled = summarize("8B / TriviaQA / POOLED (2 seeds, n=600)", sp, yp)
+    pooled = summarize("8B / TriviaQA / POOLED (2 seeds, n=600)", sp, yp, fold_seed=123)
     gate = gated_net_vs_flag(blocks, beta="0.03")
     print("\n--- 8B 门控净效应 vs 干预比例（β=0.03，双 seed 合并 n=600）---")
     for r in gate:
@@ -269,22 +297,22 @@ def main():
     results["blocks"] += seed_rows + [pooled]
     results["gated_net_vs_flag_rate_8b_beta0.03"] = gate
 
-    # ② 1.7B / TriviaQA
-    s17, y17, meta17 = load_1p7b_triviaqa()
+    # ② 1.7B / TriviaQA（折种子 0，与 detect_lr_probe_cv.py 一致）
+    s17, y17, meta17 = load_1p7b_triviaqa(fold_seed=0)
     results["blocks"].append(summarize("1.7B / TriviaQA (h_L%d, LR probe)" % meta17["peak_layer"],
-                                       s17, y17, extra=meta17))
+                                       s17, y17, fold_seed=0, extra=meta17))
 
     # ②b 8B 检测主结果集（n=200 seed=42，与 0.8509@L28 同源）——由服务器回传后分析
     if args.main_npz:
-        s, y, meta = load_probe_npz(Path(args.main_npz))
+        s, y, meta = load_probe_npz(Path(args.main_npz), fold_seed=0)
         results["blocks"].append(summarize(
             "8B / TriviaQA 主结果集 (n=%d, npz h_L%d)" % (len(y), meta["peak_layer"]),
-            s, y, extra=meta))
+            s, y, fold_seed=0, extra=meta))
     if args.main_oof:
         s, y, meta = load_oof_json(Path(args.main_oof))
         results["blocks"].append(summarize(
             "8B / TriviaQA 主结果集 (n=%d, OOF JSON, L%s)" % (len(y), meta.get("best_layer")),
-            s, y, extra=meta))
+            s, y, fold_seed=0, extra=meta))
 
     # ③ 1.7B / HellaSwag（输出面 max_prob）
     shs, yhs, metahs = load_1p7b_hellaswag()
