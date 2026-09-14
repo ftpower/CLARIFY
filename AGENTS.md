@@ -15,9 +15,12 @@
 
 ## 技能
 
-- 项目技能在 `.dsh/skills/`（**18 个**：session-start/session-end + 16 个从 Claude Code 固化的），用户级在 `~/.dsh/skills/`（dsh 发现路径：项目 `.dsh/skills` → `~/.dsh/skills` → `.agents/skills` → `~/.agents/skills`）
+- **dsh 发现路径**：项目 `.dsh/skills` → `~/.dsh/skills`（用户级）→ `.agents/skills` → `~/.agents/skills`
+- **项目级** `.dsh/skills/`（19 个）：**生产版本**，含 `session-start`/`session-end`（本项目口径：状态文件 `docs/project-state.md` + `docs/plans/current.md`）+ 16 个从 Claude Code 固化的 + `academic-check`
+- **用户级** `~/.dsh/skills/`（≥18 个，2026-09-14 提升）：**任意项目可用**。其中 `session-start`/`session-end` 为**解耦版**——状态文件缺失时按上述路径**创建骨架**；只认当前项目根，不跨项目借用状态文件
+- **暂存区** `.dsh/skills-staging/`：用户级技能的改动区（含 `promote.py --apply` 提升脚本与离线验收测试），**不被 dsh 加载**，已在 `.gitignore` 中
 - 用 `/技能名` 调用（全部 `user-invocable: true`）；模型也可在合适时机自动调用
-- 技能内容来自 Claude Code（paper-search/code-review/commit 等），已在固化时剔除 CC 专属字段（allowed-tools 等），正文保留
+- 内容源自 Claude Code（paper-search/code-review/commit 等），已剔除 CC 专属字段（`allowed-tools` 等）并补 `name`/`user-invocable`；`~/.claude/skills/` 保持 CC 原样，不改
 
 ## dsh 与 Claude Code 的差异（重要）
 

@@ -41,3 +41,7 @@ docs/thesis/
 .dsh/skills/academic-check/
 # 实验输出（gated-TLDC probe 分数，30MB JSON）
 probe_scores/
+
+# 技能暂存区不追踪（2026-09-14）：提升到 ~/.dsh/skills/ 前的改动区，
+# 临时产物（README/promote.py/测试），内容会随提升完成而失去意义
+.dsh/skills-staging/
