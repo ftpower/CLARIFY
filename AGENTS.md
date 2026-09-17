@@ -8,6 +8,16 @@
 - **当前计划**：`docs/plans/current.md` —— 优先级、行动清单、依赖、阻塞
 - 这两个文件是**唯一事实源**：会话开始/结束都读写它们。`~/.claude/plans/CLARIFY/` 与 memory/ 只是只读归档，别当成主状态。
 
+## 结论卡纪律（理论/方案/实验动手前，2026-09-17 新增）
+
+- **涉及理论推导、方案设计与修改、实验设计与修改时，动手前先读相关性高的论文卡**：
+  ① `论文/主题索引.md` 按主题标签/星级定位 ID ② `论文/论文结论卡.md` 读对应卡片
+  （重点看「不可做 / 避免的实验」与「可引用为（含红线）」）③ 据此**先明确下一步工作的可行性与必要性**再动手。
+- 卡片「不可做」字段直接否掉的实验不得再设计；卡片不足定论时回「出处」锚点读笔记/PDF。
+- 卡片库单一事实源＝`论文/_结论卡staging/`：新增/更新论文必须新增 `<ID>.md` 并重跑
+  `python3 论文/_结论卡staging/assemble_cards.py`（`--check` 应报 0 GAP）；两支生成文档禁止手改。
+- 该规则的完整原则表述见 CLAUDE.md「规则 5」。
+
 ## 会话纪律
 
 - **开始会话**（第一个动作）→ 运行 `/session-start`：读取并汇报状态与计划，确认本次目标
@@ -33,3 +43,17 @@
 ## 服务器命令硬性格式
 
 （沿用 CLAUDE.md 规则）任何 AutoDL 命令必须以 `unset HF_ENDPOINT && HF_HOME=/root/autodl-tmp/huggingface_cache python -u \` 开头，参数每行一个。
+
+## 论文下载（本机网络，2026-09-15 实测；详见 `docs/paper-download.md`）
+
+- **arXiv 直连在本机被阻断**（`arxiv.org`/`export`/国内镜像全失败）。可用替代路径 = **alphaXiv 资源域**：
+  先 `curl -s -L "https://www.alphaxiv.org/overview/<arXivID>"` 解析出版本化链接
+  `https://pdfs.assets.alphaxiv.org/<arXivID>v<N>.pdf`，再下载（**无版本号的 `<id>.pdf` 是 404**）。
+- **ACL Anthology 可用**：落地页 `https://aclanthology.org/<id>/`、PDF `https://aclanthology.org/<id>.pdf`（用 GET，HEAD 无响应）。
+- **NeurIPS proceedings 可用**：摘要页 `.../paper/<年>/hash/<hash>-Abstract-Conference.html`，PDF 需手工拼
+  `.../paper/<年>/file/<hash>-Paper-Conference.pdf`（摘要页里没有 PDF 直链；**别加 `?download=1`**，会挂起）。
+- 不可达/不可得：OpenReview 403、IEEE Xplore 付费墙（202 反爬）、**ACM DL 403（连 Gold OA 也拦，浏览器 UA/dlnext/epdf 均无效）**、
+  Deakin DRO 与 figshare 403、huggingface.co、ar5iv、web.archive.org。
+- 补充检索：CORE API `POST https://api.core.ac.uk/v3/search/works`（无需 key）可查机构仓储副本（`downloadUrl` 为空即只有元数据）。
+- 判定能否免费获取：OpenAlex（DOI/venue）→ Unpaywall（`oa_status`）→ Semantic Scholar（`openAccessPdf` 与 `externalIds` 是否含 ArXiv，无 ArXiv 即无预印本）。
+- 下载落位：`论文/论文补充/<主题>/<Paper_Name>/<论文全称>.pdf`；笔记与抽图由 `paper-analyze` 产出。
