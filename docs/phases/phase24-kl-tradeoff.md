@@ -1,6 +1,6 @@
 # Phase 24 后续：KL 反遗忘的净效果优化（两个想法）
 
-> 2026-08-13 | 停电前持久化 | 承接 `docs/phase24-kl-antiforgetting.md` 与 `memory/phase24-results.md`
+> 2026-08-13 | 停电前持久化 | 承接 `docs/phases/phase24-kl-antiforgetting.md` 与 `memory/phase24-results.md`
 > 背景：n=1000 验证确认 KL 反遗忘是真实机制（KC 退化 -50→-17 降 3×），但 β=0.3 净效果仍为负（KW+12 / KC-17，net -5）。本文档给出两个想法的理论 + 实验设计。
 
 ---

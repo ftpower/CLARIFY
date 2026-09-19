@@ -1,6 +1,6 @@
 # Learned Intervention Network (LIN) — 完整实验方案
 
-> 2026-07-27 启动 | 2026-07-28 Phase A 完成 | 基于 `docs/theory-intervention-failure.md` 理论推导
+> 2026-07-27 启动 | 2026-07-28 Phase A 完成 | 基于 `docs/theory/theory-intervention-failure.md` 理论推导
 
 ---
 
@@ -36,7 +36,7 @@ Phase B3: LIN 推理时干预           8B AutoDL, 1-2 h  → ⏸ 待决定
 
 **代码**: `experiments/lin_theory/validate_p*.py`
 
-详细结果见 `docs/theory-intervention-failure.md` Section 8 和 `experiments/outputs/lin_theory/p*_results.json`。
+详细结果见 `docs/theory/theory-intervention-failure.md` Section 8 和 `experiments/outputs/lin_theory/p*_results.json`。
 
 ### Gate 结果
 
@@ -48,7 +48,7 @@ Phase B3: LIN 推理时干预           8B AutoDL, 1-2 h  → ⏸ 待决定
 
 ## Phase A.5: 补充验证实验（2026-07-28 下午）
 
-> 基于 `docs/theory-intervention-failure.md` Section 11 的缺口分析。
+> 基于 `docs/theory/theory-intervention-failure.md` Section 11 的缺口分析。
 > **平台**: 本地 RTX 5060 8GB | Qwen3-1.7B
 
 ### A.5.1 — Δ log P 诊断 🔴

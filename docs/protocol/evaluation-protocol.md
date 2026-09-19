@@ -2,7 +2,7 @@
 
 > 论文实验方法论约束：为什么需要、每条规则的来源（反面案例）、具体操作、执行流程。
 > 创建：2026-08-26 | 适用：论文全部检测/干预实验数字，进论文前必须过协议
-> 关联：`docs/code-review-2026-08-24.md`（审查报告）、开题报告 §3.2(4)/§8(1)、`docs/theory-intervention-failure.md` §1.2.1
+> 关联：`docs/protocol/code-review-2026-08-24.md`（审查报告）、开题报告 §3.2(4)/§8(1)、`docs/theory/theory-intervention-failure.md` §1.2.1
 
 ---
 
@@ -140,8 +140,8 @@
 
 ## 6. 相关文档
 
-- 审查报告：`docs/code-review-2026-08-24.md`（问题细节与修复记录）
+- 审查报告：`docs/protocol/code-review-2026-08-24.md`（问题细节与修复记录）
 - 协议在开题的表述：`docs/thesis/开题报告草稿.txt` §3.2(4)、§8(1)；`docs/thesis/开题报告-率失真框架.md`
-- 检测数字：`docs/auroc-hallucination-detection.md` §7（实测数字表）
-- 操作代理理论：`docs/theory-intervention-failure.md` §1.2.1
+- 检测数字：`docs/protocol/auroc-hallucination-detection.md` §7（实测数字表）
+- 操作代理理论：`docs/theory/theory-intervention-failure.md` §1.2.1
 - 教训汇总：`docs/project-state.md` 关键教训节

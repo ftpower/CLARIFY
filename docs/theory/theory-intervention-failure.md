@@ -3,7 +3,7 @@
 > 从第一性原理推导：为什么 10+ 种方向-based 干预范式全部零效应，
 > 以及 TLDC (Token-Level Dynamic Contrast) 作为唯一有效方法的数学机制。
 
-> ⚠️ **状态注记（2026-09-04）**：本文所述「定理 1（固定方向干预容量为零）」「定理 2（译码器增益上界）」为本课题**自研的刻画主张，真实性未经验证**；支撑实验（10+ 范式零效应、D2 秩对比、margin 分布等）部分基于旧协议脚本，**仍处复核状态**（复核清单见 `docs/evaluation-protocol.md`，任务状态见 `docs/plans/current.md`）。复核完成前不得作为已证事实引用；开题报告未以定理形式引用（3.2.2 以「拟研究/刻画」表述），论文写作与答辩引用须保持该口径并标注「未验证/复核中」。
+> ⚠️ **状态注记（2026-09-04）**：本文所述「定理 1（固定方向干预容量为零）」「定理 2（译码器增益上界）」为本课题**自研的刻画主张，真实性未经验证**；支撑实验（10+ 范式零效应、D2 秩对比、margin 分布等）部分基于旧协议脚本，**仍处复核状态**（复核清单见 `docs/protocol/evaluation-protocol.md`，任务状态见 `docs/plans/current.md`）。复核完成前不得作为已证事实引用；开题报告未以定理形式引用（3.2.2 以「拟研究/刻画」表述），论文写作与答辩引用须保持该口径并标注「未验证/复核中」。
 
 ---
 
@@ -476,13 +476,13 @@ Phase 17 确认了事后修正的天花板。后续方向分为三路：
 - 推理时：不修改 θ，操作 h 或 logits → 受定理 1（固定方向零容量）和定理 2（信息论上界）约束
 - 训练时：修改 θ → 改变信道 C_θ 本身 → 不受推理时上界约束
 
-详见 `docs/llm-coding-theory.md` §10-§12、各 plan 文件和 `phase20-training-intervention.md`。
+详见 `docs/theory/llm-coding-theory.md` §10-§12、各 plan 文件和 `phase20-training-intervention.md`。
 
 ---
 
 ## 相关文档
 
-- 通信编码理论: `docs/llm-coding-theory.md`
+- 通信编码理论: `docs/theory/llm-coding-theory.md`
 - TLDC 机制记忆: `memory/tldc-mechanism.md`
 - Phase 17 实验结果: `memory/phase17-results.md`
 - Phase 18 计划: `~/.claude/plans/CLARIFY/phase18-tldc-improvements.md`

@@ -1,8 +1,8 @@
 # 已尝试的推理时干预方法清单（速查）
 
 > 用途：快速查阅所有尝试过的推理时干预方法——英文缩写 → 英文全称 → 中文全称 → 尝试阶段 → 结果与状态。
-> 创建：2026-08-26 | 数据来源：`docs/thesis/开题报告-率失真框架.md` §6.2、`docs/theory-intervention-failure.md`、`docs/plans/current.md`
-> ⚠️ 状态注记（2026-09-04）：文中「定理 1（固定方向干预容量为零）/ 定理 2（解码器增益上界）」为自研刻画主张、真实性未验证，支撑实验复核中（详见 `docs/llm-coding-theory.md` 文首注记）；引用其结果须标注「未验证/复核中」。
+> 创建：2026-08-26 | 数据来源：`docs/thesis/开题报告-率失真框架.md` §6.2、`docs/theory/theory-intervention-failure.md`、`docs/plans/current.md`
+> ⚠️ 状态注记（2026-09-04）：文中「定理 1（固定方向干预容量为零）/ 定理 2（解码器增益上界）」为自研刻画主张、真实性未验证，支撑实验复核中（详见 `docs/theory/llm-coding-theory.md` 文首注记）；引用其结果须标注「未验证/复核中」。
 
 ---
 
@@ -84,5 +84,5 @@
 ## 4. 命名与引用备注
 
 - ⚠️ **TLDC 全称不一致**：`docs/thesis/chapter1-introduction.md`（旧草稿）写作 "Truncated Layer-wise Delta Correction（截断逐层增量修正）"；现行正确全称为 **Token-Level Dynamic Contrast（逐 token 动态对比）**（theory-intervention-failure.md、开题框架 §5.5）。旧草稿待按率失真主线重写时一并修正
-- 相关理论：`docs/theory-intervention-failure.md` §2（统一失败机制：readout vs control）、§5.5/定理 2（增益上界）
+- 相关理论：`docs/theory/theory-intervention-failure.md` §2（统一失败机制：readout vs control）、§5.5/定理 2（增益上界）
 - 论文定位：开题 §3.3.1(1)（推理时干预容量刻画）、§5.2（TLDC 弱效应已定案）

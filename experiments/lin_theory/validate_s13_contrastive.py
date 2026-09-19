@@ -1,6 +1,6 @@
 """Phase 13.1: Contrastive Prompt Decoding for Hallucination Intervention.
 
-Theory: docs/theory-intervention-failure.md Section 13.2.
+Theory: docs/theory/theory-intervention-failure.md Section 13.2.
 Core claim: l_truth - l_std captures the model's "truthful mode" bias,
 preserving question-conditional information that global v loses.
 

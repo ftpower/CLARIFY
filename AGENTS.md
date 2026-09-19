@@ -44,7 +44,7 @@
 
 （沿用 CLAUDE.md 规则）任何 AutoDL 命令必须以 `unset HF_ENDPOINT && HF_HOME=/root/autodl-tmp/huggingface_cache python -u \` 开头，参数每行一个。
 
-## 论文下载（本机网络，2026-09-15 实测；详见 `docs/paper-download.md`）
+## 论文下载（本机网络，2026-09-15 实测；详见 `docs/protocol/paper-download.md`）
 
 - **arXiv 直连在本机被阻断**（`arxiv.org`/`export`/国内镜像全失败）。可用替代路径 = **alphaXiv 资源域**：
   先 `curl -s -L "https://www.alphaxiv.org/overview/<arXivID>"` 解析出版本化链接

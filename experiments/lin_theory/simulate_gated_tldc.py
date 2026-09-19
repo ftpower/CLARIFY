@@ -1,6 +1,6 @@
 """Post-hoc simulation of gated TLDC (detect-then-intervene) on 8B.
 
-Theory: docs/theory-gated-tldc.md §5.2 (stage 0). Read-only; no model needed.
+Theory: docs/theory/theory-gated-tldc.md §5.2 (stage 0). Read-only; no model needed.
 
 Pipeline simulated:
     decode baseline a0 (outcome y0 = baseline_correct)

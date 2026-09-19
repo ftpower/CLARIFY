@@ -3,7 +3,7 @@
 
 目的：补上项目叙事里缺的一层——"检测器在某个工作点上，把被它判为正确的样本留下来，
 准确率有多高、代价（弃权/干预比例）多大"。全部指标建立在**折外（out-of-fold）**分数上，
-避免 in-sample 高估（见 docs/evaluation-protocol.md 规则 1/3/4）。
+避免 in-sample 高估（见 docs/protocol/evaluation-protocol.md 规则 1/3/4）。
 
 协议（与主结果一致）：
   - 分层 5 折 CV；StandardScaler + LogisticRegression 全部在训练折内拟合，折外打分

@@ -1,6 +1,6 @@
 """Phase 19.2: OFDM sub-band decomposition — diagnostic experiment.
 
-Theory: docs/llm-coding-theory.md §11
+Theory: docs/theory/llm-coding-theory.md §11
 Plan:   ~/.claude/plans/CLARIFY/phase19-beyond-tldc.md
 
 Tests whether override magnitude differs across token groups (frequency bins

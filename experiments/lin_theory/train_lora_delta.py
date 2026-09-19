@@ -1,6 +1,6 @@
 """Phase 20.1: LoRA δ-Corrective Fine-tuning — reduce late-layer distractor amplification.
 
-Theory: docs/theory-intervention-failure.md
+Theory: docs/theory/theory-intervention-failure.md
 Plan:   ~/.claude/plans/CLARIFY/phase20-training-intervention.md §20.1
 
 Core idea:

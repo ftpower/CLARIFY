@@ -1,6 +1,6 @@
 """Phase 20.2: DPO Token-Preference Training — first-token y_true vs argmax pairs.
 
-Theory: docs/theory-intervention-failure.md
+Theory: docs/theory/theory-intervention-failure.md
 Plan:   ~/.claude/plans/CLARIFY/phase20-training-intervention.md §20.2
 
 Core idea:

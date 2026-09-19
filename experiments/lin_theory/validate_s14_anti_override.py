@@ -1,6 +1,6 @@
 """Phase 14b: Anti-Override Intervention.
 
-Theory: docs/theory-intervention-failure.md Section 14.3
+Theory: docs/theory/theory-intervention-failure.md Section 14.3
 
 Paradigm shift: Instead of "injecting truth" (h += α·v_classic), we "remove override"
 (h -= α·v_override). The model already knows the answer in 58% of cases but suppresses

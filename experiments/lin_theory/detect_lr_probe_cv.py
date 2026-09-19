@@ -172,7 +172,7 @@ def main():
         """折外逐样本 P(correct)：与 _probe_cv 完全相同的折划分（random_state=0）。
 
         供下游"可检测准确率 / 风险—覆盖率"评估使用（阈值无关指标之外的
-        工作点指标必须建立在折外分数上，见 docs/evaluation-protocol.md）。
+        工作点指标必须建立在折外分数上，见 docs/protocol/evaluation-protocol.md）。
         """
         oof = np.zeros(len(y), dtype=np.float64)
         for tr, te in skf.split(X, y):

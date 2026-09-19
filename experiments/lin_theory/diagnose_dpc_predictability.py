@@ -1,6 +1,6 @@
 """Phase 19.1: DPC pre-elimination — diagnostic experiment.
 
-Theory: docs/llm-coding-theory.md §10
+Theory: docs/theory/llm-coding-theory.md §10
 Plan:   ~/.claude/plans/CLARIFY/phase19-beyond-tldc.md
 
 Tests whether override δ = y_L20 - y_L27 can be predicted from L18 logits

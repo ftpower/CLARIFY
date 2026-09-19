@@ -2,7 +2,7 @@
 
 Adapted from experiments/lin_theory/validate_s14_tldc.py for Qwen3-8B (36 layers).
 
-Theory: docs/theory-intervention-failure.md Section 14.2
+Theory: docs/theory/theory-intervention-failure.md Section 14.2
 
 TLDC uses the logit difference between the detection-peak layer (ℓ*) and the
 final layer (L35) as a dynamic, per-token, per-sample intervention signal:

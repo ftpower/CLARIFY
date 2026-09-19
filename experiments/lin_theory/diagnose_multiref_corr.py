@@ -1,6 +1,6 @@
 """Phase 18.2: Multi-reference layer TLDC — diagnostic experiment.
 
-Theory: docs/theory-intervention-failure.md §5
+Theory: docs/theory/theory-intervention-failure.md §5
 Plan:   ~/.claude/plans/CLARIFY/phase18-tldc-improvements.md
 
 Tests whether combining δ from multiple reference layers (not just L20)

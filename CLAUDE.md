@@ -77,7 +77,7 @@ GPU: RTX 5090 32GB | CPU: 25 核 | RAM: 90 GB
 - Check `experiments/phase1/src/` for existing utilities before adding new ones
 - Datasets offline: `HF_DATASETS_OFFLINE=1`, `HF_HUB_OFFLINE=1`, `TRANSFORMERS_OFFLINE=1`
 - Chinese mirrors preferred for downloads; fall back to direct connection if proxy conflicts
-- Skills reference: `docs/skills-reference.md` and `~/.claude/skills-reference.md` — keep both in sync
+- Skills reference: `docs/tooling/skills-reference.md` and `~/.claude/skills-reference.md` — keep both in sync
 
 ## 核心原则：理论先行，闭环导向
 
@@ -90,7 +90,7 @@ GPU: RTX 5090 32GB | CPU: 25 核 | RAM: 90 GB
 3. **可检验预测**——明确写出"如果理论正确，我们应该观察到 X；如果理论错误，我们会看到 Y"
 4. **失败模式预判**——提前列出什么条件下该方法会失效
 
-理论推导记录在 `docs/theory-intervention-failure.md` 或新建专门文档中。实验脚本文件头注释必须引用对应的理论章节。
+理论推导记录在 `docs/theory/theory-intervention-failure.md` 或新建专门文档中。实验脚本文件头注释必须引用对应的理论章节。
 
 **反面案例**：Phase A.5 的 knowability 实验在 tokenization bug 修复前就已经跑了 P2/P3/P4/A.5.1/A.5.2/A.5.3 全部实验，所有梯度都指向了错误的 token。如果有先验证"首 token 编码与生成 token 一致"的意识，半天的工作量可以避免。
 

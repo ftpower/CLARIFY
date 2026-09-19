@@ -11,23 +11,35 @@ experiments/phase1/outputs_*/
 # 会话状态与计划不追踪（2026-09-10）：docs/project-state.md 与 docs/plans/current.md
 # 的内容以开题答辩进度为主，按"开题内容不入提交"的约定留在本地（文件仍在，工作流不变）
 docs/*
-!docs/dsh-usage-guide.md
-!docs/dsh-gap-checklist.md
-!docs/code-review-*.md
+# 追踪白名单（2026-09-19 目录重分类：theory/phases/paper/protocol/tooling）
+# ⚠️ git 不进入被忽略的目录 ⇒ 必须先放行目录，再放行其中的文件
+!docs/theory/
+docs/theory/*
+!docs/theory/theory-intervention-failure.md
+!docs/theory/theory-snr-llr.md
+!docs/theory/theory-gated-tldc.md
+!docs/theory/theory-kappa-spikiness.md
+!docs/theory/llm-coding-theory.md
+!docs/phases/
+docs/phases/*
+!docs/phases/phase5-cross-task-plan.md
+!docs/phases/phase20-8b-failure-analysis.md
+!docs/phases/phase24-kl-tradeoff.md
+!docs/protocol/
+docs/protocol/*
+!docs/protocol/code-review-*.md
+!docs/protocol/auroc-hallucination-detection.md
+!docs/protocol/evaluation-protocol.md
+!docs/protocol/intervention-methods-tried.md
+!docs/tooling/
+docs/tooling/*
+!docs/tooling/dsh-usage-guide.md
+!docs/tooling/dsh-gap-checklist.md
 __pycache__/
 *.pyc
 *.log
 # local HF datasets cache symlink (sandbox workaround)
 .cache/
-!docs/auroc-hallucination-detection.md
-!docs/evaluation-protocol.md
-!docs/intervention-methods-tried.md
-!docs/theory-intervention-failure.md
-!docs/llm-coding-theory.md
-!docs/phase24-kl-tradeoff.md
-!docs/theory-snr-llr.md
-!docs/theory-kappa-spikiness.md
-!docs/theory-gated-tldc.md
 
 # 报告类生成文件不追踪（docx/pdf 均为生成产物；txt 源与脚本保留）
 *.docx

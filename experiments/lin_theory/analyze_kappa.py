@@ -1,6 +1,6 @@
 """Phase 21 Step 1: κ-Spikiness distribution analysis — no training, pure measurement.
 
-Theory: docs/theory-kappa-spikiness.md
+Theory: docs/theory/theory-kappa-spikiness.md
 Plan:   ~/.claude/plans/CLARIFY/phase21-kappa-spikiness.md
 
 Measures channel-gain spikiness κ for KC/KW/DK samples and tests whether κ

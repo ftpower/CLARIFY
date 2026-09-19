@@ -1,6 +1,6 @@
 """Phase 14c: Token-Level Dynamic Contrast (TLDC) Decoding.
 
-Theory: docs/theory-intervention-failure.md Section 14.2
+Theory: docs/theory/theory-intervention-failure.md Section 14.2
 
 Instead of using a pre-computed direction v (which marginalizes out x), TLDC
 uses the logit difference between the detection-peak layer (ℓ*) and the final

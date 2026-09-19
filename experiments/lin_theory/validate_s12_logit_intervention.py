@@ -1,6 +1,6 @@
 """Section 12: Logit-space truth direction intervention.
 
-Theory: docs/theory-intervention-failure.md Section 12.
+Theory: docs/theory/theory-intervention-failure.md Section 12.
 Core claim: Detection (hidden space) and intervention (logit space)
 should use DIFFERENT representations. v_logit bypasses the RMSNorm
 bottleneck that attenuates hidden-space interventions by ~45x.

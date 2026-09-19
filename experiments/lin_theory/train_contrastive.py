@@ -1,6 +1,6 @@
 """Phase 20 Direction C: Contrastive Learning — replace δ margin with softmax in Q/V space.
 
-Theory: docs/phase20-8b-failure-analysis.md §2 Direction C
+Theory: docs/phases/phase20-8b-failure-analysis.md §2 Direction C
 Plan:   ~/.claude/plans/CLARIFY/phase20-8b-validation.md
 
 Core idea:

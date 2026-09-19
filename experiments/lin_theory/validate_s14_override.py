@@ -1,6 +1,6 @@
 """Phase 14a: Override Direction Construction & Diagnosis.
 
-Theory: docs/theory-intervention-failure.md Section 14.3
+Theory: docs/theory/theory-intervention-failure.md Section 14.3
 
 v_override = mean(h[know_wrong]) - mean(h[know_correct])
   - Both subsets have rank(y_true) <= 50 (model "knows" the answer)

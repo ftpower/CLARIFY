@@ -1,6 +1,6 @@
 """Phase 14d: Combined Intervention — Anti-Override + TLDC.
 
-Theory: docs/theory-intervention-failure.md Section 14.4
+Theory: docs/theory/theory-intervention-failure.md Section 14.4
 
 Combines two complementary intervention mechanisms:
   1. Hidden space (L27): h ← h - α·v_override  (remove suppression)

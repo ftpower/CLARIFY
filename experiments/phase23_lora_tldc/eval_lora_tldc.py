@@ -1,7 +1,7 @@
 """Phase 23: LoRA δ-Corrective + TLDC 组合干预 — 1.7B 验证脚本。
 
-Theory:  docs/theory-intervention-failure.md §7
-Plan:    docs/phase23-lora-tldc-combined.md
+Theory:  docs/theory/theory-intervention-failure.md §7
+Plan:    docs/phases/phase23-lora-tldc-combined.md
 
 4 策略 × β sweep（双层干预）:
   Baseline   = 原始模型, greedy

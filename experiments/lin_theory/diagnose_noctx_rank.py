@@ -1,6 +1,6 @@
 """Phase 18.3: No-context contrast TLDC — diagnostic experiment.
 
-Theory: docs/theory-intervention-failure.md §5
+Theory: docs/theory/theory-intervention-failure.md §5
 Plan:   ~/.claude/plans/CLARIFY/phase18-tldc-improvements.md
 
 Tests whether removing context improves rank of y_true on KW samples.

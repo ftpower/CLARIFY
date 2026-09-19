@@ -1,6 +1,6 @@
 """Phase 18.1: v·h gating for TLDC — diagnostic experiment.
 
-Theory: docs/theory-intervention-failure.md §5
+Theory: docs/theory/theory-intervention-failure.md §5
 Plan:   ~/.claude/plans/CLARIFY/phase18-tldc-improvements.md
 
 Uses the existing truthfulness detection direction v (mean correct - mean wrong)

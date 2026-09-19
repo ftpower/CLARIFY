@@ -176,4 +176,4 @@ auroc = max(auroc, 1 - auroc)                                    # 再按最优�
 4. **P1**：划出 held-out 校验集用于 β/λ/epoch 选择。
 5. **P2**：清理死代码、seed 完备性、`check_correct_exact` 词边界。
 
-> 本文档写入 `docs/code-review-2026-08-24.md`；修复后复评。
+> 本文档写入 `docs/protocol/code-review-2026-08-24.md`；修复后复评。

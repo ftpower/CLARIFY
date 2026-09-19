@@ -1,6 +1,6 @@
 """Phase 20.3: Adapter Bottleneck Injection — bypass L21-L27 override computation.
 
-Theory: docs/theory-intervention-failure.md
+Theory: docs/theory/theory-intervention-failure.md
 Plan:   ~/.claude/plans/CLARIFY/phase20-training-intervention.md §20.3
 
 Core idea:

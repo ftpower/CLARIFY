@@ -1,6 +1,6 @@
 """Extract per-sample probe features (h at question-end position) for gated-TLDC simulation.
 
-Theory: docs/theory-gated-tldc.md §5.1 (stage 0).
+Theory: docs/theory/theory-gated-tldc.md §5.1 (stage 0).
 
 Mirrors validate_s14_tldc.py sample loading exactly (same seeds, same skip
 condition, same prompt construction) so the output can be joined 1:1 with the

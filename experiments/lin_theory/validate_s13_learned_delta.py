@@ -1,6 +1,6 @@
 """Phase 13.2: Question-Conditional Correction Network δ_θ(h, e(x)).
 
-Theory: docs/theory-intervention-failure.md Section 13.3.
+Theory: docs/theory/theory-intervention-failure.md Section 13.3.
 Core claim: A lightweight network that takes hidden state h and question
 representation e(x) can learn question-conditional corrections that a
 global direction v cannot capture.

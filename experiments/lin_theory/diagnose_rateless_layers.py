@@ -1,6 +1,6 @@
 """Phase 19.3: Rateless adaptive layers — diagnostic experiment.
 
-Theory: docs/llm-coding-theory.md §12
+Theory: docs/theory/llm-coding-theory.md §12
 Plan:   ~/.claude/plans/CLARIFY/phase19-beyond-tldc.md
 
 Tests whether samples need different numbers of reference layers — KW samples

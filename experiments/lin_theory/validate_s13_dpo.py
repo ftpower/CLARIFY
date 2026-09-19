@@ -1,6 +1,6 @@
 """Phase 13.3: DPO Truth Reward Fine-tuning.
 
-Theory: docs/theory-intervention-failure.md Section 13.4.
+Theory: docs/theory/theory-intervention-failure.md Section 13.4.
 Three modes: build (preference pairs), train (DPO LoRA), eval (evaluate).
 
 Usage:
