@@ -100,7 +100,52 @@ ARM_DOC = {
     "anti": "Δ=−β·δ（方向取反）",
     "wrong_late": "用 L24 读出替代 ℓ*（范数重标定到 ||δ||）",
     "wrong_zero": "用 L0 读出替代 ℓ*（范数重标定到 ||δ||）",
+    # ── T3 门控族（2026-09-21 晚新增；占位核验见 docs/plans/current.md §P0-TLDC T3）──
+    "gated_margin": "应用门 G1：仅当末层前二 margin < τ 才施加 β·δ（判据=引理 1 的 m）",
+    "gated_betastar": "应用门 G2：仅当 β*_min ≤ β（可负担）才施加 β·δ",
+    "gated_damp": "应用门 G3：margin < τ 时只施加压支 −β·ReLU(−δ)（翻转 100% 由压支驱动的推论）",
 }
+GATED_ARMS = ("gated_margin", "gated_betastar", "gated_damp")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 门控判据（纯函数，可单测）
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def top2_margin(l_final):
+    """末层 logits 前二差（= 引理 1 的 m，当 a 为 argmax 时）。"""
+    v = l_final.float().squeeze().topk(2).values
+    return float((v[0] - v[1]).item())
+
+
+def min_flip_beta(l_early, l_final):
+    """β*_min = min_{c∈R} m/(m+Δ₀)，R={c: l_ℓ*(c) > l_ℓ*(a)}；R 空返回 None。"""
+    l0 = l_early.float().squeeze()
+    l1 = l_final.float().squeeze()
+    a = int(l1.argmax().item())
+    l0a = l0[a]
+    mask = l0 > l0a
+    if not bool(mask.any().item()):
+        return None
+    m = l1[a] - l1
+    d0 = l0 - l0a
+    r = torch.where(mask, m / (m + d0), torch.full_like(m, float("inf")))
+    return float(r.min().item())
+
+
+def gate_open(arm, margin_L, beta_min, beta, tau):
+    """门控决策（0/1）。返回 (是否施加, 诊断字典)。
+
+    G1 gated_margin：margin_L < τ；G2 gated_betastar：beta_min ≤ β；
+    G3 gated_damp：同 G1（另在生成侧只取压支）。
+    """
+    if arm == "gated_margin" or arm == "gated_damp":
+        return margin_L < tau, {"margin_L": margin_L}
+    if arm == "gated_betastar":
+        ok = beta_min is not None and beta_min <= beta
+        return ok, {"beta_star_min": beta_min}
+    raise ValueError(f"{arm} 不是门控臂")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -151,8 +196,9 @@ def controlled_greedy_generate(
     ctrl_layer=None,
     max_new=20,
     sample_id=0,
+    gate_tau=0.2,
 ):
-    """贪心生成，每步施加对照扰动；返回 (文本, 扰动范数比列表)。"""
+    """贪心生成，每步施加对照/门控扰动；返回 (文本, 扰动范数比列表, 门控统计)。"""
     tokens = model.to_tokens(prompt, prepend_bos=True)
     if tokens.shape[1] > 1024:
         tokens = tokens[:, -1024:]  # 截断保尾
@@ -175,6 +221,8 @@ def controlled_greedy_generate(
 
     gids = []
     norm_ratios = []
+    gate_flags = []
+    gate_diags = []
     nid = None
     for step in range(max_new):
         with torch.no_grad():
@@ -193,8 +241,24 @@ def controlled_greedy_generate(
         gen = torch.Generator(device=delta.device)
         gen.manual_seed(1234 + 7919 * sample_id + 31 * step + arm_offset)
 
-        d_ctrl = make_control_delta(delta, arm, gen, ctrl_delta)
-        norm_ratios.append(float((d_ctrl.norm() / delta.norm().clamp_min(1e-12)).item()))
+        if arm in GATED_ARMS:
+            gated, diag = gate_open(
+                arm, top2_margin(l_final), min_flip_beta(l_early, l_final), beta, gate_tau
+            )
+            gate_flags.append(bool(gated))
+            if not gated:
+                d_ctrl = torch.zeros_like(delta)  # 门关：不动
+                norm_ratios.append(0.0)
+            elif arm == "gated_damp":
+                d_ctrl = -torch.relu(-delta)  # 只取压支（保持 δ 的原幅，不重标定）
+                norm_ratios.append(float((d_ctrl.norm() / delta.norm().clamp_min(1e-12)).item()))
+            else:
+                d_ctrl = delta
+                norm_ratios.append(1.0)
+            gate_diags.append(diag)
+        else:
+            d_ctrl = make_control_delta(delta, arm, gen, ctrl_delta)
+            norm_ratios.append(float((d_ctrl.norm() / delta.norm().clamp_min(1e-12)).item()))
 
         logits_adj = l_final + beta * d_ctrl
         nid = int(logits_adj.argmax(dim=-1).item())
@@ -203,7 +267,14 @@ def controlled_greedy_generate(
             break
         tokens = torch.cat([tokens, torch.tensor([[nid]], device=device)], dim=1)
 
-    return tokenizer.decode(gids).strip(), norm_ratios
+    gate_stat = None
+    if arm in GATED_ARMS:
+        gate_stat = {
+            "n_steps": len(gate_flags),
+            "n_gated": int(sum(gate_flags)),
+            "gated_frac": (sum(gate_flags) / len(gate_flags)) if gate_flags else None,
+        }
+    return tokenizer.decode(gids).strip(), norm_ratios, gate_stat
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -317,8 +388,22 @@ def selftest():
     # 4) 配对统计：构造 b=6, c=1 → McNemar p 应 ≈0.125
     p = mcnemar_exact(6, 1)
     assert abs(p - 0.125) < 1e-9, p
-    print(f"  [4/4] 配对 McNemar(6,1)= {p:.4f}（期望 0.125）✓")
-    print("SELFTEST PASS: 4/4")
+    print(f"  [4/5] 配对 McNemar(6,1)= {p:.4f}（期望 0.125）✓")
+
+    # 5) 门控判据（T3）：top2_margin / min_flip_beta / gate_open
+    lf = torch.tensor([[3.0, 2.9, 0.0]])      # margin = 0.1
+    le = torch.tensor([[1.0, 3.5, 0.5]])      # a=0(l1 argmax)；R={1}: l0(1)=3.5>l0(0)=1.0
+    assert abs(top2_margin(lf) - 0.1) < 1e-6
+    bs = min_flip_beta(le, lf)                # m=3.0-2.9=0.1, Δ₀=3.5-1.0=2.5 → 0.1/2.6
+    assert bs is not None and abs(bs - 0.1 / 2.6) < 1e-5, bs
+    assert gate_open("gated_margin", 0.1, bs, 0.2, 0.2)[0] is True    # 0.1<0.2 开门
+    assert gate_open("gated_margin", 0.25, bs, 0.2, 0.2)[0] is False  # 关门
+    assert gate_open("gated_betastar", 0.1, bs, 0.2, 0.2)[0] is True   # β*=0.038≤0.2 开门
+    assert gate_open("gated_betastar", 0.1, bs, 0.01, 0.2)[0] is False # β*>β 关门
+    assert gate_open("gated_betastar", 0.1, None, 0.2, 0.2)[0] is False  # R 空 → 关门
+    assert gate_open("gated_damp", 0.1, bs, 0.2, 0.2)[0] is True
+    print("  [5/5] 门控判据（margin/β*_min/gate_open 三臂）✓")
+    print("SELFTEST PASS: 5/5")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -337,6 +422,8 @@ def main():
     ap.add_argument("--n_test", type=int, default=300)
     ap.add_argument("--seed_test", type=int, default=123)
     ap.add_argument("--rank_threshold", type=int, default=50)
+    ap.add_argument("--gate_tau", type=float, default=0.2,
+                    help="G1/G3 门控阈值：末层前二 margin < τ 才施加（预注册：0.2 或 0.3）")
     ap.add_argument("--max_new", type=int, default=20)
     ap.add_argument("--output_dir", type=str, default=None)
     ap.add_argument("--refresh_classify", action="store_true",
@@ -405,13 +492,15 @@ def main():
             key = f"correct_{arm}_beta{beta}"
             n_ok = 0
             for e in tqdm(entries, desc=f"  {arm}@β={beta}"):
-                text, ratios = controlled_greedy_generate(
+                text, ratios, gate_stat = controlled_greedy_generate(
                     model, tokenizer, e["prompt"], device, args.layer_early, W_U, b_U,
                     ln_final, beta, arm, ctrl_layer=ctrl_layer, max_new=args.max_new,
-                    sample_id=e["sample_id"],
+                    sample_id=e["sample_id"], gate_tau=args.gate_tau,
                 )
-                # 范数自检（F3）：所有臂都须 ≈1；偏离即报错（防混淆"层"与"幅度"）
-                bad = [r for r in ratios if abs(r - 1.0) > 0.05]
+                # 范数自检（F3）：非门控臂须 ≈1；门控臂只校验"开门"步（关门步比值为 0）；
+                # gated_damp 只取压支 ⇒ 范数天然 <1，跳过该检查（幅度由 δ⁻ 决定，非重标定问题）
+                bad = ([] if arm == "gated_damp"
+                       else [r for r in ratios if r != 0.0 and abs(r - 1.0) > 0.05])
                 if bad:
                     print(f"  [WARN] sample {e['sample_id']} {arm} 范数比偏离 1.0: {bad[:3]}")
                 v = samples.setdefault(
@@ -419,6 +508,8 @@ def main():
                     {"subset": e["subset"], "rank": e["rank"], "question": e["question"],
                      "baseline_correct": e["is_correct"]},
                 )
+                if gate_stat is not None:
+                    v.setdefault("gate_stats", {})[f"{arm}_beta{beta}"] = gate_stat
                 v[key] = check_correct_exact(text, e["answers"])  # exact 标签
                 n_ok += int(v[key])
             print(f"    {arm}@β={beta}: 生成正确 {n_ok}/{len(entries)}")
