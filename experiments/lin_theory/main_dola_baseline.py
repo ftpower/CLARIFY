@@ -93,8 +93,17 @@ def clopper_pearson(k, n, alpha=0.05):
 
 
 def get_y_true_rank(logits, y_true_id):
-    """1-indexed rank of y_true token in logits (logits: [1, seq, vocab] or [vocab])."""
-    lg = logits[0, -1, :] if logits.ndim == 3 else logits
+    """1-indexed rank of y_true token in logits.
+
+    支持三种形状：``[vocab]``、``[1, vocab]``（early-exit 投影）、``[1, seq, vocab]``（模型输出）。
+    2026-09-21 修复：模板版对 2-D 输入会 `lg[y_true_id]` 索引 batch 维 → IndexError
+    （CPU 冒烟实测；ROME/子空间两脚本同源 bug 已一并修复）。
+    """
+    if logits.ndim == 3:
+        lg = logits[0, -1, :]
+    else:
+        lg = logits.reshape(-1)
+    lg = lg.float()
     return int((lg > lg[y_true_id]).sum().item()) + 1
 
 
