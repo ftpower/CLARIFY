@@ -8,6 +8,7 @@
 #   bash scripts/review_local.sh rome-456          # ROME 正式（seed 456）
 #   bash scripts/review_local.sh subspace          # 子空间正式（seed 123）
 #   bash scripts/review_local.sh subspace-456      # 子空间正式（seed 456，复用缓存）
+#   bash scripts/review_local.sh subspace-fast     # 快档（只扫 subtract；SEED/LAM 可覆盖，需已有缓存）
 #   bash scripts/review_local.sh dola-baseline     # DoLa 1.7B baseline
 #   bash scripts/review_local.sh dola-static       # DoLa 1.7B 静态档
 #   bash scripts/review_local.sh dola-dynamic      # DoLa 1.7B 动态档
@@ -58,6 +59,10 @@ case "${1:-}" in
     ;;
   subspace-456)
     python experiments/phase4_generalization/main_subspace_intervention.py --n_dir 300 --n_eval 200 --model "$MODEL_1P7B" --layers 11 --k_pca 64 --lam 0.3 0.5 1.0 --seed 42 --n_test 300 --seed_test 456 --skip_collect
+    ;;
+  subspace-fast)
+    # 快档：只扫 subtract 模式（val 扫描时间减半，~20 分钟）；λ 网格用 LAM 覆盖
+    python experiments/phase4_generalization/main_subspace_intervention.py --n_dir 300 --n_eval 200 --model "$MODEL_1P7B" --layers 11 --k_pca 64 --lam ${LAM:-0.5 1.0} --modes subtract --seed 42 --n_test 300 --seed_test ${SEED:-123} --skip_collect
     ;;
   rome-poscontrol)
     # 阳性对照 + λ 敏感性判定：网格放宽到 0/5/20/100。

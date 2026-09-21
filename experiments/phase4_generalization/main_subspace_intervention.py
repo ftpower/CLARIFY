@@ -506,6 +506,9 @@ def main():
     parser.add_argument("--layers", type=int, nargs="+", default=[11])
     parser.add_argument("--k_pca", type=int, default=64)
     parser.add_argument("--lam", type=float, nargs="+", default=[0.3, 0.5, 1.0])
+    parser.add_argument("--modes", type=str, nargs="+", default=["subtract", "add"],
+                        choices=["subtract", "add"],
+                        help="扫描的干预模式（默认两种；只跑 subtract 可把 val 扫描时间减半）")
     parser.add_argument("--layer_early", type=int, default=20,
                         help="Early-exit layer for the DIAGNOSTIC rank only (TLDC parity)")
     parser.add_argument("--rank_threshold", type=int, default=50,
@@ -542,7 +545,7 @@ def main():
     print(f"  Splits: cal(n={args.n_dir}, seed={args.seed}) | "
           f"val(n={args.n_eval}, seed={args.seed_val}) | "
           f"test(n={args.n_test}, seed={args.seed_test})")
-    print(f"  λ candidates: {args.lam} | modes: subtract/add | "
+    print(f"  λ candidates: {args.lam} | modes: {'/'.join(args.modes)} | "
           f"know: rank<= {args.rank_threshold} (1-indexed) + check_correct_exact")
     print("=" * 72)
 
@@ -635,7 +638,7 @@ def main():
         for dtype, dvec in [("raw_mean_diff", fit["d_raw"]),
                             ("pca_aligned", fit["d_aligned"])]:
             dtype_sweep = []
-            for mode in ["subtract", "add"]:
+            for mode in args.modes:
                 for lam in sorted(args.lam):
                     counts, _ = evaluate_intervention(
                         model, model.tokenizer, val_entries, dvec, L, lam, mode,
