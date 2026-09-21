@@ -30,10 +30,13 @@ case "${1:-}" in
     python experiments/phase16_untried/phase16_rome.py --load "$ROME_LOAD" --model "$MODEL_1P7B" --layers 11 --n_calibrate 20 --seed_cal 42 --n_val 20 --seed_val 789 --n_test 30 --seed_test 123 --layer_early 20 --output_dir experiments/outputs/_smoke_rome_gpu
     ;;
   rome)
-    python experiments/phase16_untried/phase16_rome.py --load "$ROME_LOAD" --model "$MODEL_1P7B" --layers 11 --n_calibrate 200 --seed_cal 42 --n_val 100 --seed_val 789 --n_test 300 --seed_test 123 --lambdas -1.0 -0.5 0.5 1.0 --layer_early 20
+    # 正式档（宽网格）：λ 有效区间由 2026-09-21 阳性对照确定——
+    # λ=5 只破坏不救回、λ=20 首次出现 KW 救回(val 4/22)、λ=100 过强崩盘(All 44→10)；
+    # 原 ±1/±2 网格在 val 上 7 个 λ 结果全同（编辑太弱），已废弃。
+    python experiments/phase16_untried/phase16_rome.py --load "$ROME_LOAD" --model "$MODEL_1P7B" --layers 11 --n_calibrate 200 --seed_cal 42 --n_val 100 --seed_val 789 --n_test 300 --seed_test 123 --lambdas 0.0 5.0 10.0 20.0 30.0 50.0 --layer_early 20
     ;;
   rome-456)
-    python experiments/phase16_untried/phase16_rome.py --load "$ROME_LOAD" --model "$MODEL_1P7B" --layers 11 --n_calibrate 200 --seed_cal 42 --n_val 100 --seed_val 789 --n_test 300 --seed_test 456 --lambdas -1.0 -0.5 0.5 1.0 --layer_early 20
+    python experiments/phase16_untried/phase16_rome.py --load "$ROME_LOAD" --model "$MODEL_1P7B" --layers 11 --n_calibrate 200 --seed_cal 42 --n_val 100 --seed_val 789 --n_test 300 --seed_test 456 --lambdas 0.0 5.0 10.0 20.0 30.0 50.0 --layer_early 20
     ;;
   subspace)
     python experiments/phase4_generalization/main_subspace_intervention.py --n_dir 300 --n_eval 200 --model "$MODEL_1P7B" --layers 11 --k_pca 64 --lam 0.3 0.5 1.0 --seed 42 --n_test 300 --seed_test 123
