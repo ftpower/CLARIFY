@@ -127,6 +127,14 @@ def clopper_pearson(k, n, alpha=0.05):
     return (lo, hi)
 
 
+def _pct(x, signed=False):
+    """None-safe percentage formatting（2026-09-21：空子集 rate/delta 为 None，
+    旧报告段直接 `:+.1%` → TypeError 崩溃；CPU 冒烟实测）。"""
+    if x is None:
+        return "N/A"
+    return f"{x:+.1%}" if signed else f"{x:.1%}"
+
+
 def get_first_answer_token_id(tokenizer, answers):
     """First token ID of the first non-empty answer alias (leading-space).
 
@@ -682,10 +690,10 @@ def main():
           f"KW={test_baseline['know_wrong']['total']}, "
           f"KC={test_baseline['know_correct']['total']}, "
           f"DK={test_baseline['dont_know']['total']}")
-    print(f"  baseline: All={test_baseline['all']['rate']:.1%}, "
-          f"KW={test_baseline['know_wrong']['rate']}, "
-          f"KC={test_baseline['know_correct']['rate']}, "
-          f"DK={test_baseline['dont_know']['rate']:.1%}")
+    print(f"  baseline: All={_pct(test_baseline['all']['rate'])}, "
+          f"KW={_pct(test_baseline['know_wrong']['rate'])}, "
+          f"KC={_pct(test_baseline['know_correct']['rate'])}, "
+          f"DK={_pct(test_baseline['dont_know']['rate'])}")
 
     results = {}
     test_per_sample = {
@@ -755,7 +763,7 @@ def main():
                 rnd = fit["val_random_results"]
                 kwr = rnd["know_wrong"]
                 print(f"  random control (same mode/λ): KW {kwr['correct']}/{kwr['total']} "
-                      f"(Δ={kwr['delta']:+.1%})")
+                      f"(Δ={_pct(kwr['delta'], signed=True)})")
 
     # ── Statistical note (same structure as TLDC, 2026-08-25) ──
     stat_note = (
