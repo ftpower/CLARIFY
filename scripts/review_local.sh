@@ -13,9 +13,22 @@
 #   bash scripts/review_local.sh dola-dynamic      # DoLa 1.7B 动态档
 #   bash scripts/review_local.sh dola-8b-baseline  # DoLa 8B baseline（服务器用）
 #   bash scripts/review_local.sh beta-sweep        # Phase 24 β sweep（服务器用，改 BETA=...）
+#   bash scripts/review_local.sh geometry          # FAD/S5 几何档案：baseline 轨迹（seed 123）
+#   bash scripts/review_local.sh geometry-456      # 同上（seed 456）
+#   bash scripts/review_local.sh geometry-lift     # 阶段2 单抬支轨迹（BETA=0.05 默认）
+#   bash scripts/review_local.sh geometry-damp     # 阶段2 单压支轨迹
+#   bash scripts/review_local.sh geometry-sym      # 阶段2 对称 TLDC 轨迹
+#   bash scripts/review_local.sh geometry-8b-baseline  # 8B 基线轨迹（服务器用）
+#   bash scripts/review_local.sh ctrl-smoke        # 零机制对照臂冒烟（n=30，先跑）
+#   bash scripts/review_local.sh ctrl-tldc         # 对照臂全臂 β=0.20（seed123，1.7B）
+#   bash scripts/review_local.sh ctrl-tldc-456     # 对照臂 real+shuffle（seed456）
+#   bash scripts/review_local.sh ctrl-tldc-lowbeta # 次判据档 β=0.03（real+shuffle）
 #
 # 说明：每条命令写成单行（`\` 续行在部分终端粘贴时会因行尾空格失效）。
 # 服务器命令请自行补 `unset HF_ENDPOINT && HF_HOME=...` 前缀（见 runbook §2）。
+# ⚠️ 服务器跑 8B case 时：HF_HUB_OFFLINE=1 使 repo id 无法解析 ⇒ 必须覆盖模型路径，
+#    例：MODEL_8B=/root/autodl-tmp/huggingface_cache/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218 \
+#        bash scripts/review_local.sh geometry-8b-baseline
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -63,6 +76,40 @@ case "${1:-}" in
     ;;
   beta-sweep)
     env -u HF_ENDPOINT HF_HOME="${HF_HOME_SERVER:-/root/autodl-tmp/huggingface_cache}" python -u experiments/lin_theory/train_lora_delta.py --mode train --model_path "$MODEL_8B" --n_train 200 --n_test 800 --n_val 200 --epochs 1 --kc_ce_only --kl_beta "$BETA"
+    ;;
+  geometry)
+    python experiments/lin_theory/dump_geometry_archive.py --model "$MODEL_1P7B" --layer_early 20 --n_test 300 --seed_test 123 --operator baseline --output_dir experiments/outputs/geometry_archive
+    ;;
+  geometry-456)
+    python experiments/lin_theory/dump_geometry_archive.py --model "$MODEL_1P7B" --layer_early 20 --n_test 300 --seed_test 456 --operator baseline --output_dir experiments/outputs/geometry_archive
+    ;;
+  geometry-lift)
+    python experiments/lin_theory/dump_geometry_archive.py --model "$MODEL_1P7B" --layer_early 20 --n_test 300 --seed_test 123 --operator lift --beta "${BETA:-0.05}" --output_dir experiments/outputs/geometry_archive
+    ;;
+  geometry-damp)
+    python experiments/lin_theory/dump_geometry_archive.py --model "$MODEL_1P7B" --layer_early 20 --n_test 300 --seed_test 123 --operator damp --beta "${BETA:-0.05}" --output_dir experiments/outputs/geometry_archive
+    ;;
+  geometry-sym)
+    python experiments/lin_theory/dump_geometry_archive.py --model "$MODEL_1P7B" --layer_early 20 --n_test 300 --seed_test 123 --operator sym --beta "${BETA:-0.05}" --output_dir experiments/outputs/geometry_archive
+    ;;
+  ctrl-smoke)
+    # 零机制对照臂冒烟（n=30，主判据档 β=0.20；先跑这个验证代码链路）
+    python experiments/lin_theory/main_tldc_controls.py --model "$MODEL_1P7B" --layer_early 20 --n_test 30 --seed_test 123 --arms real shuffle --betas 0.2 --output_dir experiments/outputs/_smoke_tldc_ctrl
+    ;;
+  ctrl-tldc)
+    # 本地 1.7B 全臂 @ 主判据档 β=0.20（6 臂；预估 20–40 分钟）
+    python experiments/lin_theory/main_tldc_controls.py --model "$MODEL_1P7B" --layer_early 20 --n_test 300 --seed_test 123 --arms real shuffle gauss anti wrong_late wrong_zero --betas 0.2 --output_dir experiments/outputs/tldc_controls
+    ;;
+  ctrl-tldc-456)
+    # 第二 seed（主判据两臂：real vs shuffle）
+    python experiments/lin_theory/main_tldc_controls.py --model "$MODEL_1P7B" --layer_early 20 --n_test 300 --seed_test 456 --arms real shuffle --betas 0.2 --output_dir experiments/outputs/tldc_controls
+    ;;
+  ctrl-tldc-lowbeta)
+    # 次判据档 β=0.03（real + shuffle，一致性检查）
+    python experiments/lin_theory/main_tldc_controls.py --model "$MODEL_1P7B" --layer_early 20 --n_test 300 --seed_test 123 --arms real shuffle --betas 0.03 --output_dir experiments/outputs/tldc_controls
+    ;;
+  geometry-8b-baseline)
+    env -u HF_ENDPOINT HF_HOME="${HF_HOME_SERVER:-/root/autodl-tmp/huggingface_cache}" python -u experiments/lin_theory/dump_geometry_archive.py --model "$MODEL_8B" --layer_early 28 --n_test 300 --seed_test 123 --operator baseline --output_dir experiments/outputs/geometry_archive_8b
     ;;
   *)
     sed -n '2,20p' "$0"

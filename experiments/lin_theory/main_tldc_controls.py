@@ -1,0 +1,462 @@
+"""TLDC 零机制/安慰剂对照臂（2026-09-21）——回答「救回是知识特异还是通用扰动」。
+
+═══════════════════════════════════════════════════════════════════════════════
+理论先行（规则 1）
+═══════════════════════════════════════════════════════════════════════════════
+【问题形式化】
+  干预算子（TLDC）：在每步 t 用双读出构造扰动 Δ_t = β·(l_ℓ*(t) − l_L(t)) = β·δ_t，
+  施加于末层 logits：l' = l_L + Δ_t，贪心取 argmax。
+  样本按基线行为分层：KW（rank≤50 且 exact 错）、KC（rank≤50 且 exact 对）、DK（rank>50）。
+  观测：KW 组救回率 r_KW、KC 组破坏率 b_KC、DK 组同向率（参考）。
+
+【机制假说】
+  H1（知识特异）：救回依赖 δ_t 的**内容**——即参考层对正确 token 的相对偏好。
+      ⇒ 破坏 δ 与 token 的对应关系（但保持幅度分布）应当显著降低 r_KW。
+  H2（通用扰动）：救回只依赖**扰动的幅度**（把 logits 推离原 argmax，偶发翻到正确 token）。
+      ⇒ 任何同幅度扰动应给出与真实 δ 同量级的 r_KW（且与 DK 参考组同量级）。
+
+【可检验预测】（预注册，见 docs/protocol/placebo-control-protocol.md）
+  P-A（shuffle 臂，主判据）：臂 A1 把 δ 的**词表条目随机置换**（多重集/范数完全保持，
+     仅破坏 token 对齐）。若 H1 成立 → r_KW(A1) 显著低于 r_KW(real)；若 H2 成立 → 两者无差异。
+  P-B（gauss 臂）：同 L2 范数的各向同性高斯扰动，检验"仅幅度"假说。
+  P-C（wrong-layer 臂）：用**别的层**的读出（ℓ'≠ℓ*，范数匹配）做同样的对比插值。
+      若 ℓ* 不特殊（任何层都行）→ r_KW 与 real 无差异 ⇒ FAD/I01「选层准则」组件贬值。
+  P-D（anti 臂）：Δ 取负号（−β·δ）。若方向有信息 → r_KW 应≈0 而 b_KC 升高。
+  P-E（real 臂，协议自检）：必须复现 validate_s14_tldc.py 已发布的 (KW,KC) 数字
+      （同 seed/同 n/同 β），否则说明本脚本协议漂移，其余臂作废。
+
+【失败模式预判】
+  F1. KW 救回事件本身稀少（8B 双 seed pooled β=0.20：21/122）⇒ 单臂检验功效有限；
+      故主判据用**配对** McNemar（real vs 对照，同批 KW 样本），而非两组独立比率。
+  F2. shuffle 臂若与 DK 参考率同量级，说明"救回"在该臂下就是运气——这正是 H2 的证据，
+      但需注意 DK 与 KW 的 rank 分布不同，解读须并列报两列。
+  F3. wrong-layer 臂的 δ 范数与 real 不同 ⇒ 必须**重标定到同一范数**，否则混淆"层"与"幅度"。
+  F4. GPU 数值：末层 l_L 必须模型真实 logits（禁 lens 代验，T04）；ℓ* 读出用 lens 是算子定义本身。
+  F5. 纯 logits 锐化/top-k 截断**不是**有效对照：它们是单调变换，不改变 argmax ⇒ 在 greedy
+      解码下恒为 0 救回 0 破坏（T15 的 R2/APC 臂只在采样解码下才有意义）——故本套不设该臂，
+      以免把"结构性零效应"误读为"无通用扰动"。
+
+【红线】
+  - 不得只报 real 臂的 KW 救回率而不报对照臂与 DK 参考（runbook §5 第 7 条）。
+  - 不得事后更换 β 网格或主判据（多重比较纪律；β=0.20 为主、0.03 为次，其余描述性）。
+  - 引用 T15 时注意其域限：MLLM 对象幻觉 / POPE / ≤13B。
+
+═══════════════════════════════════════════════════════════════════════════════
+用法
+═══════════════════════════════════════════════════════════════════════════════
+  自检（无模型）：      python experiments/lin_theory/main_tldc_controls.py --selftest
+  本地 1.7B 冒烟：      --n_test 30 --arms real shuffle --betas 0.2
+  本地 1.7B 全量：      --n_test 300 --arms real shuffle gauss anti wrong_late wrong_zero \
+                        --betas 0.03 0.2
+  服务器 8B：          同上 + --model <Qwen3-8B 快照路径> --layer_early 28
+"""
+
+import argparse
+import json
+import os
+import sys
+import time
+import zlib
+from pathlib import Path
+
+import torch
+
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+os.environ["HF_DATASETS_OFFLINE"] = "1"
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+
+_sys_parent = Path(__file__).parent.parent
+for _p in [
+    str(Path(__file__).parent),
+    str(_sys_parent / "phase2_entropy"),
+    str(_sys_parent / "phase4_generalization"),
+    str(_sys_parent / "phase5_cross_task"),
+]:
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+from analyze_tldc_per_token import (  # noqa: E402
+    classify_samples,
+    compute_early_exit_logits,
+)
+from analyze_transition_matrix import (  # noqa: E402
+    clopper_pearson,
+    fisher_greater,
+    mcnemar_exact,
+)
+from common import load_model_and_unembed  # noqa: E402
+from src.data_loader import check_correct_exact, load_triviaqa  # noqa: E402
+
+# 预注册：β 网格（与 s14 一致）+ 主/次判据档
+BETAS_ALLOWED = [0.01, 0.03, 0.05, 0.08, 0.10, 0.15, 0.20]
+BETA_PRIMARY = 0.20  # 主判据档（KW 救回最强、知识特异最明显）
+BETA_SECONDARY = 0.03  # 次判据档（最低工作点）
+
+ARM_DOC = {
+    "real": "真实 TLDC（Δ=β·δ）——协议自检臂，须复现已发布数字",
+    "shuffle": "δ 词表随机置换（范数/多重集完全保持，仅破坏 token 对齐）— 主判据",
+    "gauss": "同 L2 范数各向同性高斯（无结构，仅幅度）",
+    "anti": "Δ=−β·δ（方向取反）",
+    "wrong_late": "用 L24 读出替代 ℓ*（范数重标定到 ||δ||）",
+    "wrong_zero": "用 L0 读出替代 ℓ*（范数重标定到 ||δ||）",
+}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 扰动构造（纯函数，可单测）
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def make_control_delta(delta, arm, gen, ctrl_delta=None):
+    """把真实扰动 δ 变换为对照臂扰动（保持 L2 范数）。
+
+    delta: [1, V] 真实扰动（未乘 β）；ctrl_delta: wrong_* 臂的另一层扰动。
+    返回 [1, V]，范数与 delta 一致（wrong_* 臂按比例重标定）。
+    """
+    if arm == "real":
+        return delta
+    if arm == "shuffle":
+        perm = torch.randperm(delta.shape[-1], generator=gen, device=delta.device)
+        return delta[..., perm]
+    if arm == "gauss":
+        g = torch.randn(delta.shape, generator=gen, device=delta.device, dtype=delta.dtype)
+        return g * (delta.norm() / g.norm().clamp_min(1e-12))
+    if arm == "anti":
+        return -delta
+    if arm.startswith("wrong"):
+        if ctrl_delta is None:
+            raise ValueError(f"{arm} 需要 ctrl_delta")
+        scale = delta.norm() / ctrl_delta.norm().clamp_min(1e-12)  # 范数重标定（F3）
+        return ctrl_delta * scale
+    raise ValueError(f"未知 arm: {arm}")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 生成（带对照扰动）
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def controlled_greedy_generate(
+    model,
+    tokenizer,
+    prompt,
+    device,
+    layer_early,
+    W_U,
+    b_U,
+    ln_final,
+    beta,
+    arm,
+    ctrl_layer=None,
+    max_new=20,
+    sample_id=0,
+):
+    """贪心生成，每步施加对照扰动；返回 (文本, 扰动范数比列表)。"""
+    tokens = model.to_tokens(prompt, prepend_bos=True)
+    if tokens.shape[1] > 1024:
+        tokens = tokens[:, -1024:]  # 截断保尾
+
+    hook_early = f"blocks.{layer_early}.hook_resid_post"
+    hook_ctrl = f"blocks.{ctrl_layer}.hook_resid_post" if arm.startswith("wrong") else None
+    captured = {}
+    arm_offset = zlib.crc32(arm.encode()) % 100000
+
+    def _hook(name):
+        def fn(act, hook=None):
+            captured[name] = act[:, -1:, :].detach()
+            return act
+
+        return fn
+
+    hooks = [(hook_early, _hook("h_early"))]
+    if hook_ctrl:
+        hooks.append((hook_ctrl, _hook("h_ctrl")))
+
+    gids = []
+    norm_ratios = []
+    nid = None
+    for step in range(max_new):
+        with torch.no_grad():
+            logits_final = model.run_with_hooks(tokens, fwd_hooks=hooks)
+
+        l_final = logits_final[0, -1:, :].float()  # TRUE final logits（T04）
+        l_early = compute_early_exit_logits(captured["h_early"], ln_final, W_U, b_U)
+        delta = l_early - l_final
+
+        ctrl_delta = None
+        if hook_ctrl:
+            l_ctrl = compute_early_exit_logits(captured["h_ctrl"], ln_final, W_U, b_U)
+            ctrl_delta = l_ctrl - l_final
+
+        # 每 (arm, sample, step) 固定随机种子 → 可复现
+        gen = torch.Generator(device=delta.device)
+        gen.manual_seed(1234 + 7919 * sample_id + 31 * step + arm_offset)
+
+        d_ctrl = make_control_delta(delta, arm, gen, ctrl_delta)
+        norm_ratios.append(float((d_ctrl.norm() / delta.norm().clamp_min(1e-12)).item()))
+
+        logits_adj = l_final + beta * d_ctrl
+        nid = int(logits_adj.argmax(dim=-1).item())
+        gids.append(nid)
+        if nid == tokenizer.eos_token_id:
+            break
+        tokens = torch.cat([tokens, torch.tensor([[nid]], device=device)], dim=1)
+
+    return tokenizer.decode(gids).strip(), norm_ratios
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 统计（含配对 real-vs-对照）
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def arm_stats(samples, arm, beta, subset_key="know_wrong"):
+    """单臂统计：逐格转移 + 子集率 + DK 参考 + McNemar。"""
+    key = f"correct_{arm}_beta{beta}"
+    res = brk = 0
+    n = 0
+    per_sub = {}
+    for v in samples.values():
+        if key not in v or v.get("baseline_correct") is None:
+            continue
+        n += 1
+        base, final = v["baseline_correct"], v[key]
+        s = per_sub.setdefault(v["subset"], {"n": 0, "bw": 0, "br": 0, "rescue": 0, "break": 0})
+        s["n"] += 1
+        s["bw" if not base else "br"] += 1
+        if not base and final:
+            res += 1
+            s["rescue"] += 1
+        elif base and not final:
+            brk += 1
+            s["break"] += 1
+    for s in per_sub.values():
+        s["rescue_rate"] = s["rescue"] / s["bw"] if s["bw"] else None
+        s["break_rate"] = s["break"] / s["br"] if s["br"] else None
+
+    kw, dk, kc = per_sub.get(subset_key, {}), per_sub.get("dont_know", {}), per_sub.get("know_correct", {})
+    out = {
+        "arm": arm,
+        "beta": beta,
+        "n": n,
+        "rescue": res,
+        "break": brk,
+        "net_pp": (res - brk) / n * 100 if n else 0.0,
+        "mcnemar_p": mcnemar_exact(res, brk),
+        "per_subset": per_sub,
+    }
+    if kw and dk and kw.get("bw") and dk.get("bw"):
+        out["rescue_kw"] = f"{kw['rescue']}/{kw['bw']}"
+        out["rescue_dk"] = f"{dk['rescue']}/{dk['bw']}"
+        r_dk = dk["rescue_rate"]
+        out["ratio_kw_dk"] = (kw["rescue_rate"] / r_dk) if r_dk else None
+        out["fisher_kw_vs_dk"] = fisher_greater(
+            kw["rescue"], kw["bw"] - kw["rescue"], dk["rescue"], dk["bw"] - dk["rescue"]
+        )
+        out["kw_rescue_ci"] = clopper_pearson(kw["rescue"], kw["bw"])
+    if kc and dk and kc.get("br") and dk.get("br"):
+        out["break_kc"] = f"{kc['break']}/{kc['br']}"
+        out["break_dk"] = f"{dk['break']}/{dk['br']}"
+    return out
+
+
+def paired_vs_real(samples, ctrl_arm, beta):
+    """主判据：KW 样本上 real vs 对照 的配对 McNemar（救回事件）。
+
+    仅统计基线错的 KW 样本：b=real 救回且对照未救回，c=对照救回且 real 未救回。
+    """
+    kr, kc_ = f"correct_real_beta{beta}", f"correct_{ctrl_arm}_beta{beta}"
+    b = c = 0
+    for v in samples.values():
+        if v.get("subset") != "know_wrong" or v.get("baseline_correct"):
+            continue
+        if kr not in v or kc_ not in v:
+            continue
+        if v[kr] and not v[kc_]:
+            b += 1
+        elif v[kc_] and not v[kr]:
+            c += 1
+    return {"b_real_only": b, "c_ctrl_only": c, "mcnemar_p": mcnemar_exact(b, c)}
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 自检（无模型）
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def selftest():
+    torch.manual_seed(0)
+    d = torch.randn(1, 64)
+    ctrl = torch.randn(1, 64) * 3.0
+    gen = torch.Generator().manual_seed(7)
+
+    # 1) 范数匹配：所有对照臂 ||Δ_ctrl|| == ||δ||
+    for arm, extra in [("shuffle", None), ("gauss", None), ("anti", None), ("wrong_late", ctrl)]:
+        out = make_control_delta(d, arm, gen, extra)
+        assert out.shape == d.shape
+        assert abs(out.norm().item() - d.norm().item()) < 1e-4, (arm, out.norm().item(), d.norm().item())
+    print("  [1/4] 范数匹配（shuffle/gauss/anti/wrong_late）✓")
+
+    # 2) shuffle 保持多重集（排序后逐元素相等）；gauss 破坏对齐；anti = −δ
+    sh = make_control_delta(d, "shuffle", gen)
+    assert torch.allclose(sh.sort().values, d.sort().values)
+    assert not torch.allclose(sh, d)
+    assert torch.allclose(make_control_delta(d, "anti", gen), -d)
+    g = make_control_delta(d, "gauss", gen)
+    cos = torch.nn.functional.cosine_similarity(g.flatten(), d.flatten(), dim=0).abs().item()
+    assert cos < 0.5, f"gauss 不应与 δ 对齐（cos={cos}）"
+    print("  [2/4] shuffle 多重集保持 / anti 取反 / gauss 去对齐 ✓")
+
+    # 3) 复现性：同种子两次调用结果一致
+    a1 = make_control_delta(d, "gauss", torch.Generator().manual_seed(11))
+    a2 = make_control_delta(d, "gauss", torch.Generator().manual_seed(11))
+    assert torch.allclose(a1, a2)
+    print("  [3/4] 同种子复现 ✓")
+
+    # 4) 配对统计：构造 b=6, c=1 → McNemar p 应 ≈0.125
+    p = mcnemar_exact(6, 1)
+    assert abs(p - 0.125) < 1e-9, p
+    print(f"  [4/4] 配对 McNemar(6,1)= {p:.4f}（期望 0.125）✓")
+    print("SELFTEST PASS: 4/4")
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Main
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def main():
+    ap = argparse.ArgumentParser(description="TLDC 零机制/安慰剂对照臂")
+    ap.add_argument("--model", type=str, default="Qwen/Qwen3-1.7B")
+    ap.add_argument("--layer_early", type=int, default=20, help="ℓ*（1.7B=20，8B=28）")
+    ap.add_argument("--ctrl_layer", type=int, default=24, help="wrong_late 用的层")
+    ap.add_argument("--ctrl_layer_zero", type=int, default=0, help="wrong_zero 用的层")
+    ap.add_argument("--arms", nargs="+", default=["real", "shuffle"])
+    ap.add_argument("--betas", nargs="+", type=float, default=[BETA_PRIMARY])
+    ap.add_argument("--n_test", type=int, default=300)
+    ap.add_argument("--seed_test", type=int, default=123)
+    ap.add_argument("--rank_threshold", type=int, default=50)
+    ap.add_argument("--max_new", type=int, default=20)
+    ap.add_argument("--output_dir", type=str, default=None)
+    ap.add_argument("--refresh_classify", action="store_true",
+                    help="强制重算分类（默认复用 _classify_cache，省约 11 分钟/轮）")
+    ap.add_argument("--selftest", action="store_true")
+    args = ap.parse_args()
+
+    if args.selftest:
+        selftest()
+        return
+
+    for b in args.betas:
+        if b not in BETAS_ALLOWED:
+            sys.exit(f"预注册纪律：β={b} 不在 {BETAS_ALLOWED}（禁止网格外扫描）")
+    unknown = [a for a in args.arms if a not in ARM_DOC]
+    if unknown:
+        sys.exit(f"未知 arm: {unknown}（可选 {list(ARM_DOC)}）")
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    out_dir = Path(args.output_dir) if args.output_dir else (
+        Path(__file__).parent.parent / "outputs" / "tldc_controls"
+    )
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    print("=" * 76)
+    print("TLDC 零机制/安慰剂对照臂")
+    print(f"  model={args.model} ℓ*={args.layer_early} arms={args.arms} β={args.betas}")
+    print("=" * 76)
+
+    model, tokenizer, W_U, b_U, ln_final = load_model_and_unembed(device, args.model)
+    print(f"  loaded: {model.cfg.n_layers} layers, V={model.cfg.d_vocab_out}")
+
+    print(f"[1/3] classify (seed={args.seed_test}, n={args.n_test})...")
+    # 分类结果缓存：classify 在 1.7B 上约 11 分钟/轮（300 样本 × 每次前向），
+    # 且对 (model, ℓ*, rank_threshold, seed, n) 完全确定 ⇒ 跨 arm/β 运行复用。
+    cache_dir = out_dir / "_classify_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    model_tag = Path(str(args.model).rstrip("/")).name
+    cache_key = f"{model_tag}_l{args.layer_early}_r{args.rank_threshold}_s{args.seed_test}_n{args.n_test}"
+    cache_path = cache_dir / f"classify_{cache_key}.json"
+    if cache_path.exists() and not args.refresh_classify:
+        entries = json.loads(cache_path.read_text())
+        print(f"  [cache] 命中 {cache_path.name}（跳过 classify；--refresh_classify 可强制重算）")
+    else:
+        test_samples = load_triviaqa(n_samples=args.n_test, seed=args.seed_test)[: args.n_test]
+        entries = classify_samples(
+            model, tokenizer, test_samples, device, args.layer_early, args.rank_threshold
+        )
+        cache_path.write_text(json.dumps(entries, ensure_ascii=False), encoding="utf-8")
+        print(f"  [cache] 已写入 {cache_path.name}")
+    print(f"  KC={sum(1 for e in entries if e['subset']=='know_correct')}, "
+          f"KW={sum(1 for e in entries if e['subset']=='know_wrong')}, "
+          f"DK={sum(1 for e in entries if e['subset']=='dont_know')}")
+
+    samples = {}
+    print("[2/3] generating under control arms...")
+    from tqdm import tqdm
+
+    for arm in args.arms:
+        ctrl_layer = None
+        if arm == "wrong_late":
+            ctrl_layer = args.ctrl_layer
+        elif arm == "wrong_zero":
+            ctrl_layer = args.ctrl_layer_zero
+        for beta in args.betas:
+            key = f"correct_{arm}_beta{beta}"
+            n_ok = 0
+            for e in tqdm(entries, desc=f"  {arm}@β={beta}"):
+                text, ratios = controlled_greedy_generate(
+                    model, tokenizer, e["prompt"], device, args.layer_early, W_U, b_U,
+                    ln_final, beta, arm, ctrl_layer=ctrl_layer, max_new=args.max_new,
+                    sample_id=e["sample_id"],
+                )
+                # 范数自检（F3）：所有臂都须 ≈1；偏离即报错（防混淆"层"与"幅度"）
+                bad = [r for r in ratios if abs(r - 1.0) > 0.05]
+                if bad:
+                    print(f"  [WARN] sample {e['sample_id']} {arm} 范数比偏离 1.0: {bad[:3]}")
+                v = samples.setdefault(
+                    e["sample_id"],
+                    {"subset": e["subset"], "rank": e["rank"], "question": e["question"],
+                     "baseline_correct": e["is_correct"]},
+                )
+                v[key] = check_correct_exact(text, e["answers"])  # exact 标签
+                n_ok += int(v[key])
+            print(f"    {arm}@β={beta}: 生成正确 {n_ok}/{len(entries)}")
+
+    print("[3/3] 统计 + 保存...")
+    report = {"config": vars(args), "arms": {}, "paired_vs_real": {}}
+    for arm in args.arms:
+        for beta in args.betas:
+            st = arm_stats(samples, arm, beta)
+            report["arms"][f"{arm}_beta{beta}"] = st
+            if arm != "real" and ("real" in args.arms):
+                report["paired_vs_real"][f"{arm}_beta{beta}"] = paired_vs_real(samples, arm, beta)
+
+    out = {"meta": {"script": Path(__file__).name, "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "theory": "docs/protocol/placebo-control-protocol.md", "arms_doc": ARM_DOC},
+           "report": report, "samples": {str(k): v for k, v in samples.items()}}
+    tag = f"{args.seed_test}_{'-'.join(args.arms)}"
+    path = out_dir / f"tldc_controls_{tag}.json"
+    with open(path, "w") as f:
+        json.dump(out, f, ensure_ascii=False, indent=1)
+
+    # ── 报告 ──
+    print("\n" + "=" * 76)
+    print(f"{'arm':>12} {'β':>5} {'KW 救回':>12} {'KW/DK':>7} {'Fisher p':>9} "
+          f"{'KC 破坏':>10} {'净 pp':>7}")
+    for arm in args.arms:
+        for beta in args.betas:
+            st = report["arms"][f"{arm}_beta{beta}"]
+            ratio = f"{st.get('ratio_kw_dk'):.2f}×" if st.get("ratio_kw_dk") else "—"
+            fp = f"{st.get('fisher_kw_vs_dk'):.4f}" if st.get("fisher_kw_vs_dk") is not None else "—"
+            print(f"{arm:>12} {beta:>5} {st.get('rescue_kw','—'):>12} {ratio:>7} {fp:>9} "
+                  f"{st.get('break_kc','—'):>10} {st['net_pp']:>+7.1f}")
+    if report["paired_vs_real"]:
+        print("\n主判据（KW 样本配对 McNemar：real 独有救回 vs 对照独有救回）")
+        for k, v in report["paired_vs_real"].items():
+            print(f"  {k}: b={v['b_real_only']}, c={v['c_ctrl_only']}, p={v['mcnemar_p']:.4f}")
+    print(f"\n[saved] {path}")
+
+
+if __name__ == "__main__":
+    main()

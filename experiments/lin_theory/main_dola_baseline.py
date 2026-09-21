@@ -17,7 +17,7 @@
     再按 exact 对错分 KC（know_correct）/ KW（know_wrong）/ DK（dont_know）。
     ⚠️ 口径核实（2026-09-21）：`common.extract_h_at_layer` 的 hook 只捕获 h 并 pass-through，
     返回的 logits 是模型**最终层输出** → `validate_s14_tldc.py` 的 rank 就是最终层 rank（`--layer_early`
-    只决定捕获哪一层的 h）。本脚本同口径，并把 ℓ\* early-exit rank 另存为诊断字段 `rank_early`。
+    只决定捕获哪一层的 h）。本脚本同口径，并把 ℓ* early-exit rank 另存为诊断字段 `rank_early`。
   · 统计：KW/KC/DK/All 的 Δ + Clopper-Pearson 95% CI（**无任何 max(auroc,1-auroc) 符号翻转**）
 
 数值纪律（2026-08-25 教训：lens 重算 logits 有 cublas 舍入伪影，实测 13.5% 步级 argmax 不一致）
