@@ -3,6 +3,7 @@
 #
 # 用法：
 #   bash scripts/review_local.sh smoke-rome        # ROME 冒烟（小样本，先跑这个）
+#   bash scripts/review_local.sh rome-poscontrol   # ROME λ 敏感性/阳性对照（网格 0/5/20/100）
 #   bash scripts/review_local.sh rome              # ROME 正式（seed 123）
 #   bash scripts/review_local.sh rome-456          # ROME 正式（seed 456）
 #   bash scripts/review_local.sh subspace          # 子空间正式（seed 123）
@@ -39,6 +40,11 @@ case "${1:-}" in
     ;;
   subspace-456)
     python experiments/phase4_generalization/main_subspace_intervention.py --n_dir 300 --n_eval 200 --model "$MODEL_1P7B" --layers 11 --k_pca 64 --lam 0.3 0.5 1.0 --seed 42 --n_test 300 --seed_test 456 --skip_collect
+    ;;
+  rome-poscontrol)
+    # 阳性对照 + λ 敏感性判定：网格放宽到 0/5/20/100。
+    # 判读：val sweep 四行若开始分化 → 是网格太窄；若 λ=100 仍与 λ=0 完全相同 → 编辑未进前向（真 bug）。
+    python experiments/phase16_untried/phase16_rome.py --load "$ROME_LOAD" --model "$MODEL_1P7B" --layers 11 --n_calibrate 50 --seed_cal 42 --n_val 100 --seed_val 789 --n_test 30 --seed_test 123 --lambdas 0.0 5.0 20.0 100.0 --layer_early 20 --output_dir experiments/outputs/rome_poscontrol
     ;;
   dola-baseline)
     python experiments/lin_theory/main_dola_baseline.py --model "$MODEL_1P7B" --mode baseline --layer_early 20 --n_test 300 --seed_test 123 --save_samples --output_dir experiments/outputs/dola_baseline_review_1p7b

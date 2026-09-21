@@ -71,6 +71,21 @@ GPU: RTX 5090 32GB | CPU: 25 核 | RAM: 90 GB
 	      --lambda_delta 0.0025
 	    ```
 
+## 设备调度：能上 GPU 的一律交用户跑（2026-09-21 用户拍板）
+
+- **原则**：需要"真跑一次"的验证/实验，**直接给用户可粘贴的 GPU 命令**，由用户在本地 RTX 5060 或
+  AutoDL 服务器上执行；**不要在 agent 侧用 CPU 跑长时间冒烟**。
+- **原因（事实）**：① agent 沙箱 **GPU 被操作系统阻断**（`nvidia-smi` 报
+  `Failed to initialize NVML: GPU access blocked by the operating system`），无法启动任何 CUDA 任务；
+  ② 沙箱内 HF datasets 缓存目录**只读**（`OSError: Read-only file system ... .lock`），CPU 跑只能用替身数据，
+  既慢又不是真协议。实测 CPU 冒烟 1.7B 单样本约 40–50 s，GPU 上是秒级。
+- **agent 侧 CPU 仅限**：语法/导入检查（`py_compile`）、秒级纯逻辑单测、档案/JSON/文档分析，
+  以及**用户明确要求**时的兜底验证。
+- **命令交付形式**：优先 `bash scripts/<name>.sh <case>`（一命令一行；多行粘贴时行尾 `\` 后若带空格会失效，
+  实测踩过）；必要时给单行命令。**服务器命令仍遵循硬性格式**（`unset HF_ENDPOINT && HF_HOME=... python -u \` 开头、
+  每参数一行），脚本内服务器 case 已内置该前缀。
+- 若某项确实需要在 agent 侧跑数值，先问用户是否愿意代跑，不要默认自己慢慢跑。
+
 ## Key Conventions
 
 - **代码复用优先**: 接到代码任务时，先对照 `memory/reference_code_analysis.md` 确认相关模块 → 检查对应仓库的具体实现 → 优先 import 或适配现有模块 → 只有现有实现确实不满足需求时才编写新代码。六个参考仓库（hallbayes、AdaVIB、DoLa、EasyDetect、TransformerLens、nnsight）已实现大部分核心机制，从头写容易引入数值稳定性、边界条件等已在成熟库中修复过的问题
