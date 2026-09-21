@@ -13,8 +13,11 @@
   · 样本：`load_triviaqa(n_samples=n_test, seed=seed_test)`（1.7B: seed123/456，8B 同）
   · prompt：`format_prompt(..., dataset="triviaqa")`；>1024 token 时 **保尾部**（`tokens[:, -1024:]`）
   · 标签：`check_correct_exact`（**exact，不用 fuzzy** — 8 点清单第 ② 项）
-  · 知识划分：ℓ* 层真实 logits 上 y_true 的 **1-indexed rank**，`rank<=50` 为 know，
-    再按 exact 对错分 KC（know_correct）/ KW（know_wrong）/ DK（dont_know）
+  · 知识划分：**最终层真实 logits** 上 y_true 的 **1-indexed rank**，`rank<=50` 为 know，
+    再按 exact 对错分 KC（know_correct）/ KW（know_wrong）/ DK（dont_know）。
+    ⚠️ 口径核实（2026-09-21）：`common.extract_h_at_layer` 的 hook 只捕获 h 并 pass-through，
+    返回的 logits 是模型**最终层输出** → `validate_s14_tldc.py` 的 rank 就是最终层 rank（`--layer_early`
+    只决定捕获哪一层的 h）。本脚本同口径，并把 ℓ\* early-exit rank 另存为诊断字段 `rank_early`。
   · 统计：KW/KC/DK/All 的 Δ + Clopper-Pearson 95% CI（**无任何 max(auroc,1-auroc) 符号翻转**）
 
 数值纪律（2026-08-25 教训：lens 重算 logits 有 cublas 舍入伪影，实测 13.5% 步级 argmax 不一致）
@@ -269,7 +272,7 @@ def main():
                     help="APC 系数（I19: 0.1；<=0 关闭）")
     ap.add_argument("--apc_variant", type=str, default="hard", choices=["hard", "-1000"])
     ap.add_argument("--layer_early", type=int, default=28,
-                    help="知识划分层 ℓ*（8B: 28；1.7B 本线用 20）")
+                    help="ℓ* 层：仅用于**诊断字段** rank_early（知识划分用最终层真实 logits，与 TLDC 线同口径）；8B 惯例 28，1.7B 本线 20")
     ap.add_argument("--rank_threshold", type=int, default=50)
     ap.add_argument("--n_test", type=int, default=300)
     ap.add_argument("--seed_test", type=int, default=123)
@@ -324,14 +327,24 @@ def main():
         toks = model.to_tokens(prompt, prepend_bos=True)
         if toks.shape[1] > MAX_CTX:
             toks = toks[:, -MAX_CTX:]
+        storage = {}
+        hook_pt = f"blocks.{args.layer_early}.hook_resid_post"
+
+        def _cap(act, hook=None, _s=storage):
+            _s["h"] = act[0, -1, :].detach()
+            return act
+
         with torch.no_grad():
-            logits = model(toks)
-        rank = get_y_true_rank(logits, y_true_id)
+            logits = model.run_with_hooks(toks, fwd_hooks=[(hook_pt, _cap)])
+        rank = get_y_true_rank(logits, y_true_id)  # 最终层真实 logits（与 TLDC 线同口径）
+        l_early = F.linear(ln_final(storage["h"].unsqueeze(0)), W_U_T, b_U)
+        rank_early = get_y_true_rank(l_early, y_true_id)  # ℓ* early-exit rank（诊断字段）
         base_text, _, _ = generate(model, tokenizer, prompt, device, mode="baseline",
                                    max_new=args.max_new, W_U_T=W_U_T, b_U=b_U, ln_final=ln_final)
         ok = check_correct_exact(base_text, s["answers"])  # exact（8 点清单 ②）
         subset = ("know_correct" if ok else "know_wrong") if rank <= args.rank_threshold else "dont_know"
-        entries.append({"sample_id": i, "rank": rank, "baseline_correct": bool(ok), "subset": subset,
+        entries.append({"sample_id": i, "rank": rank, "rank_early": rank_early,
+                        "baseline_correct": bool(ok), "subset": subset,
                         "question": s["question"][:80], "answers": s["answers"],
                         "baseline_text": base_text[:120], "prompt": prompt})
 
@@ -357,7 +370,8 @@ def main():
         lens_n += an
         ok = check_correct_exact(text, e["answers"])
         per_sample.append({
-            "sample_id": e["sample_id"], "rank": e["rank"], "subset": e["subset"],
+            "sample_id": e["sample_id"], "rank": e["rank"], "rank_early": e["rank_early"],
+            "subset": e["subset"],
             "baseline_correct": e["baseline_correct"], "intervened_correct": bool(ok),
             "gen_text": text[:120], "n_steps": len(trace),
             "selected_layers": [t["selected_layer"] for t in trace],
@@ -404,7 +418,8 @@ def main():
         "config": {**{k: v for k, v in vars(args).items()}},
         "protocol": {
             "labels": "exact (check_correct_exact)",
-            "know_rule": f"rank(L{args.layer_early}) <= {args.rank_threshold}",
+            "know_rule": f"rank(final real logits) <= {args.rank_threshold} (1-indexed); "
+                         f"L{args.layer_early} early-exit rank stored as diagnostic only",
             "truncation": "keep tail (<=1024)",
             "mature_term": "model real logits (not lens)",
             "rp": 1.0,
