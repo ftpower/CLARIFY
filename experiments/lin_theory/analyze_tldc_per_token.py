@@ -494,6 +494,12 @@ def main():
     parser.add_argument("--n_test", type=int, default=50)
     parser.add_argument("--beta", type=float, default=0.10)
     parser.add_argument("--layer_early", type=int, default=20)
+    parser.add_argument(
+        "--model",
+        type=str,
+        default="Qwen/Qwen3-1.7B",
+        help="模型 repo id 或服务器快照路径（8B: Qwen/Qwen3-8B，配 --layer_early 28）— 2026-09-21 新增",
+    )
     parser.add_argument("--rank_threshold", type=int, default=50)
     parser.add_argument("--output_dir", type=str, default=None)
     args = parser.parse_args()
@@ -513,9 +519,9 @@ def main():
 
     # ── Load model ──
     print("\n[1/4] Loading model...")
-    model, tokenizer, W_U, b_U, ln_final = load_model_and_unembed(device)
+    model, tokenizer, W_U, b_U, ln_final = load_model_and_unembed(device, args.model)
     final_layer = model.cfg.n_layers - 1
-    print(f"  Model: {model.cfg.n_layers} layers")
+    print(f"  Model: {args.model} | {model.cfg.n_layers} layers | ℓ*={args.layer_early} L={final_layer}")
 
     # ── Classify samples ──
     print(f"\n[2/4] Classifying test samples (seed={args.seed_test})...")

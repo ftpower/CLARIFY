@@ -57,3 +57,6 @@ probe_scores/
 # 技能暂存区不追踪（2026-09-14）：提升到 ~/.dsh/skills/ 前的改动区，
 # 临时产物（README/promote.py/测试），内容会随提升完成而失去意义
 .dsh/skills-staging/
+
+# 求职采集工具（与毕设无关，独立目录，2026-09-20）
+job-hunt/
