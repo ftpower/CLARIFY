@@ -18,7 +18,8 @@
 #   bash scripts/review_local.sh geometry-456      # 同上（seed 456）
 #   bash scripts/review_local.sh geometry-lift     # 阶段2 单抬支轨迹（BETA=0.05 默认）
 #   bash scripts/review_local.sh geometry-damp     # 阶段2 单压支轨迹
-#   bash scripts/review_local.sh geometry-sym      # 阶段2 对称 TLDC 轨迹
+#   bash scripts/review_local.sh geometry-sym      # 阶段2 对称 TLDC 轨迹（干预后档案，SYM_BETA 默认 0.20）
+#   bash scripts/review_local.sh geometry-sym-8b   # 同上 8B（服务器用；SEED/SYM_BETA 可覆盖）
 #   bash scripts/review_local.sh geometry-8b-baseline  # 8B 基线轨迹（服务器用）
 #   bash scripts/review_local.sh ctrl-smoke        # 零机制对照臂冒烟（n=30，先跑）
 #   bash scripts/review_local.sh ctrl-tldc         # 对照臂全臂 β=0.20（seed123，1.7B）
@@ -99,7 +100,12 @@ case "${1:-}" in
     python experiments/lin_theory/dump_geometry_archive.py --model "$MODEL_1P7B" --layer_early 20 --n_test 300 --seed_test 123 --operator damp --beta "${BETA:-0.05}" --output_dir experiments/outputs/geometry_archive
     ;;
   geometry-sym)
-    python experiments/lin_theory/dump_geometry_archive.py --model "$MODEL_1P7B" --layer_early 20 --n_test 300 --seed_test 123 --operator sym --beta "${BETA:-0.05}" --output_dir experiments/outputs/geometry_archive
+    # 阶段2 对称 TLDC 轨迹（干预后档案）；SYM_BETA 默认 0.20 = 主判据档（方向可分性检验用）
+    python experiments/lin_theory/dump_geometry_archive.py --model "$MODEL_1P7B" --layer_early 20 --n_test 300 --seed_test "${SEED:-123}" --operator sym --beta "${SYM_BETA:-0.20}" --output_dir experiments/outputs/geometry_archive
+    ;;
+  geometry-sym-8b)
+    # 阶段2 对称 TLDC 轨迹（8B，服务器用）；SEED / SYM_BETA 可覆盖
+    env -u HF_ENDPOINT HF_HOME="${HF_HOME_SERVER:-/root/autodl-tmp/huggingface_cache}" python -u experiments/lin_theory/dump_geometry_archive.py --model "$MODEL_8B" --layer_early 28 --n_test 300 --seed_test "${SEED:-123}" --operator sym --beta "${SYM_BETA:-0.20}" --output_dir experiments/outputs/geometry_archive_8b_sym
     ;;
   ctrl-smoke)
     # 零机制对照臂冒烟（n=30，主判据档 β=0.20；先跑这个验证代码链路）
