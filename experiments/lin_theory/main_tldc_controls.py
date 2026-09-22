@@ -526,7 +526,10 @@ def main():
     out = {"meta": {"script": Path(__file__).name, "created": time.strftime("%Y-%m-%d %H:%M:%S"),
                     "theory": "docs/protocol/placebo-control-protocol.md", "arms_doc": ARM_DOC},
            "report": report, "samples": {str(k): v for k, v in samples.items()}}
-    tag = f"{args.seed_test}_{'-'.join(args.arms)}"
+    # τ 须进文件名：门控族同一 seed/arms/β 下 τ=0.2 与 τ=0.3 仅差 gate_tau，
+    # 原命名（seed_arms）会让次档静默覆盖主档（2026-09-22 修）。
+    gate_tag = f"_tau{args.gate_tau}" if any(a in GATED_ARMS for a in args.arms) else ""
+    tag = f"{args.seed_test}_{'-'.join(args.arms)}{gate_tag}"
     path = out_dir / f"tldc_controls_{tag}.json"
     with open(path, "w") as f:
         json.dump(out, f, ensure_ascii=False, indent=1)

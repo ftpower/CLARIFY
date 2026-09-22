@@ -29,9 +29,10 @@
 #
 # 说明：每条命令写成单行（`\` 续行在部分终端粘贴时会因行尾空格失效）。
 # 服务器命令请自行补 `unset HF_ENDPOINT && HF_HOME=...` 前缀（见 runbook §2）。
-# ⚠️ 服务器跑 8B case 时：HF_HUB_OFFLINE=1 使 repo id 无法解析 ⇒ 必须覆盖模型路径，
-#    例：MODEL_8B=/root/autodl-tmp/huggingface_cache/hub/models--Qwen--Qwen3-8B/snapshots/b968826d9c46dd6066d109eabc6255188de91218 \
-#        bash scripts/review_local.sh geometry-8b-baseline
+# ⚠️ 服务器跑 8B case：**`--model` 传 repo id `Qwen/Qwen3-8B`**（各 case 默认值即可），
+#    不要传快照完整路径——`src/model_loader._find_local_path` 会自行解析 HF_HOME 缓存快照，
+#    而传快照路径会在 `get_official_model_name` 处 ValueError（2026-09-22 实测踩过，见 runbook §5.2b）；
+#    快照路径只适用于 `train_lora_delta.py` / `analyze_tldc_per_token.py` 这类 transformers 直连脚本。
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
