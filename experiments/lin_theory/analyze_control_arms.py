@@ -32,16 +32,30 @@ def load_files(paths):
     """→ {(arm, beta): {sample_id: (subset, base, final)}}，多文件（多 seed）自动 pool。
 
     ⚠️ 以 sample_id 为键（不用列表顺序），保证 real-vs-对照的配对不会因样本集差异错位。
-    注意：不同 seed 的 sample_id 会冲突，故多 seed pool 需给不同 seed 传不同文件且
-    sample_id 前缀化——本脚本按 (file, sample_id) 复合键规避。
+    注意：不同 seed 的 sample_id 会冲突，故多 seed pool 用 **seed 前缀** 复合键规避。
+    ⚠️ 2026-09-22 修复：`main_tldc_controls.py` 把 config 写在 `report.config`（**不是** `meta.config`），
+    原实现读 `meta.config` ⇒ seed 恒为 "?" ⇒ 双 seed 输入互相覆盖、pooled 静默只剩一个 seed
+    （8B 上会把 122 个 KW 当成 64 个，pooled p 从 0.0127 变成 0.2266）。现改为 report.config 优先、
+    meta 兜底，并对同 tag 的重复输入报警。
     """
     pooled = {}
     metas = []
+    tags = {}
     for p in paths:
         d = json.loads(Path(p).read_text())
         meta = d.get("meta", {})
-        metas.append({"file": Path(p).name, "meta": meta})
-        seed = meta.get("config", {}).get("seed_test", "?") if isinstance(meta.get("config"), dict) else "?"
+        cfg = {}
+        if isinstance(d.get("report"), dict) and isinstance(d["report"].get("config"), dict):
+            cfg = d["report"]["config"]
+        elif isinstance(meta.get("config"), dict):
+            cfg = meta["config"]
+        seed = cfg.get("seed_test")
+        tag = f"s{seed}" if seed is not None else Path(p).stem
+        metas.append({"file": Path(p).name, "meta": meta, "seed": seed, "tag": tag})
+        if tag in tags:
+            print(f"  ⚠️ [pool 警告] {Path(p).name} 与前一个输入同 tag={tag}"
+                  f"（前一个：{tags[tag]}）⇒ 同 seed 重复输入会造成样本覆盖，请确认是否误传")
+        tags[tag] = Path(p).name
         samples = d["samples"]
         arms, betas = set(), set()
         for v in samples.values():
@@ -56,7 +70,7 @@ def load_files(paths):
                 bucket = pooled.setdefault((arm, b), {})
                 for sid, v in samples.items():
                     if key in v and v.get("baseline_correct") is not None:
-                        bucket[f"{seed}:{sid}"] = (v["subset"], bool(v["baseline_correct"]), bool(v[key]))
+                        bucket[f"{tag}:{sid}"] = (v["subset"], bool(v["baseline_correct"]), bool(v[key]))
     return pooled, metas
 
 
