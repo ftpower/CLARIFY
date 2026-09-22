@@ -28,6 +28,8 @@
 #   bash scripts/review_local.sh gated-tldc        # T3 门控族（TAU=0.2/0.3 可覆盖）
 #   bash scripts/review_local.sh gated-tldc-456    # T3 门控第二 seed（real+gated_margin）
 #   bash scripts/review_local.sh gated-tldc-8b     # T3 门控 8B（服务器用；SEED/TAU 可覆盖）
+#   bash scripts/review_local.sh verified-tldc     # 验证器臂（一步前瞻，θ=0.5 预注册）
+#   bash scripts/review_local.sh verified-tldc-8b  # 验证器臂 8B（服务器用；SEED/THETA 可覆盖）
 #
 # 说明：每条命令写成单行（`\` 续行在部分终端粘贴时会因行尾空格失效）。
 # 服务器命令请自行补 `unset HF_ENDPOINT && HF_HOME=...` 前缀（见 runbook §2）。
@@ -130,6 +132,14 @@ case "${1:-}" in
   gated-tldc-456)
     # 第二 seed（门控主臂两臂：real + gated_margin）
     python experiments/lin_theory/main_tldc_controls.py --model "$MODEL_1P7B" --layer_early 20 --n_test 300 --seed_test 456 --arms real gated_margin --betas 0.2 --gate_tau "${TAU:-0.2}" --output_dir experiments/outputs/tldc_gated
+    ;;
+  verified-tldc)
+    # 验证器臂（§5.8b；θ=0.5 预注册，THETA 可覆盖但改 θ 即为破预注册，须在报告中声明）
+    python experiments/lin_theory/main_tldc_controls.py --model "$MODEL_1P7B" --layer_early 20 --n_test 300 --seed_test "${SEED:-123}" --arms real verified_sym --betas 0.2 --verify_theta "${THETA:-0.5}" --output_dir experiments/outputs/tldc_verified
+    ;;
+  verified-tldc-8b)
+    # 验证器臂 8B（服务器用）；SEED / THETA 可覆盖
+    env -u HF_ENDPOINT HF_HOME="${HF_HOME_SERVER:-/root/autodl-tmp/huggingface_cache}" python -u experiments/lin_theory/main_tldc_controls.py --model "$MODEL_8B" --layer_early 28 --ctrl_layer 31 --n_test 300 --seed_test "${SEED:-123}" --arms real verified_sym --betas 0.2 --verify_theta "${THETA:-0.5}" --output_dir experiments/outputs/tldc_verified_8b
     ;;
   gated-tldc-8b)
     # T3 门控族 8B（服务器用；H1′ 成立后"门控作为改进主张"的规模复验，ℓ*=28 与 8B TLDC 同协议）

@@ -178,10 +178,16 @@ def main():
            "规则：干预后在 t+1 步读 β*_min，**≥θ 则保留翻转、<θ 则回退**（回退视为回到基线结果）。",
            "", "| θ | 保留的救回 | 保留的破坏 | 投影净事件 | 备注 |", "|---|---|---|---|---|"]
     proj = {}
+    # None（下一步 R 为空＝任何 token 都翻不动＝最稳固）按"保留"处理，与 verified_sym 臂一致；
+    # 实测这类样本在救回/破坏间基本对称（14 vs 13），故对净效应近似中性。
+    def _kept(r, th):
+        v = r.get(best_key)
+        return v is None or v >= th
     for th in (0.0, 0.2, 0.3, 0.5, 0.7, 0.9):
-        rk = sum(1 for r in resc if r.get(best_key) is not None and r[best_key] >= th)
-        bk = sum(1 for r in brk if r.get(best_key) is not None and r[best_key] >= th)
-        proj[th] = {"rescue_kept": rk, "break_kept": bk, "net": rk - bk}
+        rk = sum(1 for r in resc if _kept(r, th))
+        bk = sum(1 for r in brk if _kept(r, th))
+        proj[th] = {"rescue_kept": rk, "break_kept": bk, "net": rk - bk,
+                    "note": "None 视作保留（β*→∞）"}
         md.append(f"| {th:.1f} | {rk}/{len(resc)} | {bk}/{len(brk)} | **{rk-bk:+d}** | "
                   f"{'—' if th else '无验证 = 现状'} |")
     md += ["", "> ⚠️ 投影假设「回退即回到基线结果」（单步干预设计下成立；档案是多步干预，故为近似估计）。"

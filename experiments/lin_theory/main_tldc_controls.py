@@ -104,8 +104,13 @@ ARM_DOC = {
     "gated_margin": "应用门 G1：仅当末层前二 margin < τ 才施加 β·δ（判据=引理 1 的 m）",
     "gated_betastar": "应用门 G2：仅当 β*_min ≤ β（可负担）才施加 β·δ",
     "gated_damp": "应用门 G3：margin < τ 时只施加压支 −β·ReLU(−δ)（翻转 100% 由压支驱动的推论）",
+    # ── 验证器臂（2026-09-22 晚新增；§5.8 事后方向可分性实测的落地）──
+    "verified_sym": "验证器臂：每步算对称 TLDC 翻转；若与基线 argmax 不同，则做【一步前瞻】——"
+                    "在新前缀上读 β*_min，≥θ 保留翻转、<θ 回退为基线 token"
+                    "（θ 由 --verify_theta 预注册，默认 0.5；None＝R 空＝翻不动＝保留）",
 }
 GATED_ARMS = ("gated_margin", "gated_betastar", "gated_damp")
+VERIFY_ARMS = ("verified_sym",)
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -132,6 +137,16 @@ def min_flip_beta(l_early, l_final):
     d0 = l0 - l0a
     r = torch.where(mask, m / (m + d0), torch.full_like(m, float("inf")))
     return float(r.min().item())
+
+
+def verify_decision(beta_next, theta):
+    """verified_sym 的一步前瞻决策（纯函数，可单测）。
+
+    β*_min ≥ θ ⇒ 新状态稳固 ⇒ 保留翻转；< θ ⇒ 脆弱 ⇒ 回退。
+    `None`＝下一步 R 为空（任何 token 都翻不动）＝最稳固 ⇒ 保留。
+    θ 预注册 0.5（runbook §5.8b），**不得按结果更改**。
+    """
+    return beta_next is None or beta_next >= theta
 
 
 def gate_open(arm, margin_L, beta_min, beta, tau):
@@ -197,8 +212,9 @@ def controlled_greedy_generate(
     max_new=20,
     sample_id=0,
     gate_tau=0.2,
+    verify_theta=0.5,
 ):
-    """贪心生成，每步施加对照/门控扰动；返回 (文本, 扰动范数比列表, 门控统计)。"""
+    """贪心生成，每步施加对照/门控扰动；返回 (文本, 扰动范数比列表, 门控/验证统计)。"""
     tokens = model.to_tokens(prompt, prepend_bos=True)
     if tokens.shape[1] > 1024:
         tokens = tokens[:, -1024:]  # 截断保尾
@@ -223,6 +239,10 @@ def controlled_greedy_generate(
     norm_ratios = []
     gate_flags = []
     gate_diags = []
+    vstat = None
+    if arm in VERIFY_ARMS:
+        vstat = {"n_noflip": 0, "n_flip": 0, "n_kept": 0, "n_kept_inf": 0,
+                 "n_reverted": 0, "kept_beta_sum": 0.0, "rev_beta_sum": 0.0}
     nid = None
     for step in range(max_new):
         with torch.no_grad():
@@ -241,7 +261,40 @@ def controlled_greedy_generate(
         gen = torch.Generator(device=delta.device)
         gen.manual_seed(1234 + 7919 * sample_id + 31 * step + arm_offset)
 
-        if arm in GATED_ARMS:
+        if arm in VERIFY_ARMS:
+            # 一步前瞻验证：先算对称 TLDC 会翻成什么；只在与基线不同时才付出前瞻代价
+            nid_base = int(l_final.argmax(dim=-1).item())
+            nid_sym = int((l_final + beta * delta).argmax(dim=-1).item())
+            if nid_sym == nid_base:
+                nid = nid_base
+                norm_ratios.append(0.0)
+                vstat["n_noflip"] += 1
+            else:
+                vstat["n_flip"] += 1
+                tokens_try = torch.cat(
+                    [tokens, torch.tensor([[nid_sym]], device=device)], dim=1
+                )
+                with torch.no_grad():
+                    logits_try = model.run_with_hooks(tokens_try, fwd_hooks=hooks)
+                l_final_try = logits_try[0, -1:, :].float()
+                l_early_try = compute_early_exit_logits(
+                    captured["h_early"], ln_final, W_U, b_U
+                )
+                b_next = min_flip_beta(l_early_try, l_final_try)
+                if verify_decision(b_next, verify_theta):   # 稳固 ⇒ 保留翻转
+                    nid = nid_sym
+                    norm_ratios.append(1.0)
+                    if b_next is None:
+                        vstat["n_kept_inf"] += 1
+                    else:
+                        vstat["n_kept"] += 1
+                        vstat["kept_beta_sum"] += b_next
+                else:                                        # 脆弱 ⇒ 回退到基线 token
+                    nid = nid_base
+                    norm_ratios.append(0.0)
+                    vstat["n_reverted"] += 1
+                    vstat["rev_beta_sum"] += b_next
+        elif arm in GATED_ARMS:
             gated, diag = gate_open(
                 arm, top2_margin(l_final), min_flip_beta(l_early, l_final), beta, gate_tau
             )
@@ -260,8 +313,9 @@ def controlled_greedy_generate(
             d_ctrl = make_control_delta(delta, arm, gen, ctrl_delta)
             norm_ratios.append(float((d_ctrl.norm() / delta.norm().clamp_min(1e-12)).item()))
 
-        logits_adj = l_final + beta * d_ctrl
-        nid = int(logits_adj.argmax(dim=-1).item())
+        if arm not in VERIFY_ARMS:
+            logits_adj = l_final + beta * d_ctrl
+            nid = int(logits_adj.argmax(dim=-1).item())
         gids.append(nid)
         if nid == tokenizer.eos_token_id:
             break
@@ -273,6 +327,23 @@ def controlled_greedy_generate(
             "n_steps": len(gate_flags),
             "n_gated": int(sum(gate_flags)),
             "gated_frac": (sum(gate_flags) / len(gate_flags)) if gate_flags else None,
+        }
+    elif arm in VERIFY_ARMS:
+        n_flip = vstat["n_flip"]
+        n_kept = vstat["n_kept"] + vstat["n_kept_inf"]
+        gate_stat = {
+            "n_steps": len(norm_ratios),
+            "n_noflip": vstat["n_noflip"],
+            "n_flip": n_flip,
+            "n_kept": n_kept,
+            "n_kept_finite": vstat["n_kept"],
+            "n_kept_inf": vstat["n_kept_inf"],
+            "n_reverted": vstat["n_reverted"],
+            "flip_rate": (n_flip / len(norm_ratios)) if norm_ratios else None,
+            "keep_rate_of_flips": (n_kept / n_flip) if n_flip else None,
+            "mean_kept_beta": (vstat["kept_beta_sum"] / vstat["n_kept"]) if vstat["n_kept"] else None,
+            "mean_reverted_beta": (vstat["rev_beta_sum"] / vstat["n_reverted"]) if vstat["n_reverted"] else None,
+            "verify_theta": verify_theta,
         }
     return tokenizer.decode(gids).strip(), norm_ratios, gate_stat
 
@@ -388,7 +459,14 @@ def selftest():
     # 4) 配对统计：构造 b=6, c=1 → McNemar p 应 ≈0.125
     p = mcnemar_exact(6, 1)
     assert abs(p - 0.125) < 1e-9, p
-    print(f"  [4/5] 配对 McNemar(6,1)= {p:.4f}（期望 0.125）✓")
+    print(f"  [4/6] 配对 McNemar(6,1)= {p:.4f}（期望 0.125）✓")
+
+    # 6) verified_sym 一步前瞻决策（预注册 θ=0.5）
+    assert verify_decision(None, 0.5) is True          # R 空 ⇒ 最稳固 ⇒ 保留
+    assert verify_decision(0.9, 0.5) is True           # 稳固 ⇒ 保留
+    assert verify_decision(0.5, 0.5) is True           # 边界含等号
+    assert verify_decision(0.25, 0.5) is False         # 脆弱 ⇒ 回退
+    print("  [6/6] 前瞻验证决策（None/≥θ 保留、<θ 回退）✓")
 
     # 5) 门控判据（T3）：top2_margin / min_flip_beta / gate_open
     lf = torch.tensor([[3.0, 2.9, 0.0]])      # margin = 0.1
@@ -422,6 +500,8 @@ def main():
     ap.add_argument("--n_test", type=int, default=300)
     ap.add_argument("--seed_test", type=int, default=123)
     ap.add_argument("--rank_threshold", type=int, default=50)
+    ap.add_argument("--verify_theta", type=float, default=0.5,
+                    help="verified_sym 的一步前瞻阈值（预注册 0.5）：t+1 步 β*_min ≥ θ 保留翻转")
     ap.add_argument("--gate_tau", type=float, default=0.2,
                     help="G1/G3 门控阈值：末层前二 margin < τ 才施加（预注册：0.2 或 0.3）")
     ap.add_argument("--max_new", type=int, default=20)
@@ -496,6 +576,7 @@ def main():
                     model, tokenizer, e["prompt"], device, args.layer_early, W_U, b_U,
                     ln_final, beta, arm, ctrl_layer=ctrl_layer, max_new=args.max_new,
                     sample_id=e["sample_id"], gate_tau=args.gate_tau,
+                    verify_theta=args.verify_theta,
                 )
                 # 范数自检（F3）：非门控臂须 ≈1；门控臂只校验"开门"步（关门步比值为 0）；
                 # gated_damp 只取压支 ⇒ 范数天然 <1，跳过该检查（幅度由 δ⁻ 决定，非重标定问题）
