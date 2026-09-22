@@ -258,24 +258,47 @@ def main():
         net_real, net_g = real_t["net_pp"], stats[arm]["t"]["net_pp"]
         iii_ok = net_g > net_real
         all_ok = i_ok and ii_point and iii_ok
+        # 退化护栏（2026-09-22 冒烟暴露）：KW 两臂均无救回事件时，
+        # (i) 与 (ii) 都会"自动通过"，net 改善全部来自破坏减少 ⇒ 不足以称"改进"。
+        rescue_real = real_t["per_subset"].get("know_wrong", {}).get("rescue", 0)
+        rescue_gated = stats[arm]["t"]["per_subset"].get("know_wrong", {}).get("rescue", 0)
+        degen = []
+        if b + c == 0:
+            degen.append("(i) 无救回事件差异 b+c=0")
+        if d_ + e_ == 0:
+            degen.append("(ii) 无破坏事件差异 d+e=0")
+        degenerate = bool(degen) and (rescue_real + rescue_gated == 0)
+        if all_ok and degenerate:
+            verdict_txt = "**不可判定（退化：两臂均无救回事件）**"
+        elif all_ok:
+            verdict_txt = "**改进成立**"
+        else:
+            verdict_txt = "**不成立**"
         verdict[arm] = {"i_ok": i_ok, "i_b": b, "i_c": c, "i_p": p_i, "i_n_kw": n_kw,
                         "ii_point": ii_point, "ii_sig": ii_sig, "ii_d": d_, "ii_e": e_,
                         "ii_p": p_ii, "ii_n_kc": n_kc,
                         "iii_ok": iii_ok, "net_real": net_real, "net_gated": net_g,
-                        "improvement": all_ok}
+                        "rescue_real": rescue_real, "rescue_gated": rescue_gated,
+                        "degenerate": degenerate, "degenerate_reasons": degen,
+                        "improvement": all_ok and not degenerate}
         md.append(
             f"| {arm} | b={b}, c={c}, p={p_i:.4f} | {'✅' if i_ok else '❌'} "
             f"| d={d_}, e={e_}, p={p_ii:.4f} | {'✅' if ii_point else '❌'} "
             f"| {'✅' if ii_sig else '❌'} "
             f"| {net_real:+.1f} → {net_g:+.1f} | {'✅' if iii_ok else '❌'} "
-            f"| {'**改进成立**' if all_ok else '**不成立**'} |"
+            f"| {verdict_txt} |"
         )
+        if degenerate:
+            md.append(f"| ↳ | 退化原因：{'; '.join(degen)}（real 救回 {rescue_real}、"
+                      f"gated 救回 {rescue_gated}）⇒ 三条判据在无救回事件时不可判定 | | | | | | |")
     md.append("")
     md += ["> (i) b=仅 real 救回、c=仅 gated 救回（KW 基线错样本）；不成立 ⇔ b>c 且双侧 p<0.05。",
            "> (ii) d=仅 real 破坏、e=仅 gated 破坏（KC 基线对样本）；单侧 p=P(X≤e)。",
            "> ⚠️ 预注册原文未写 (ii) 以点比较还是显著性为准 ⇒ 两个口径并列报，",
            ">    `点比较 ✅ + 显著 ❌` 只能记「弱成立」，论文中必须写明口径。",
            "> (iii) net = (救回 − 破坏)/n × 100pp，全体样本。",
+           "> ⚠️ **退化护栏**：若 real 与 gated **两臂均无救回事件**，(i)(ii) 会自动通过而 net 改善",
+           ">   全部来自破坏减少 ⇒ 判为「不可判定（退化）」，**不得**据此主张改进（2026-09-22 冒烟暴露）。",
            "> **判停（预注册）**：(ii) 不成立 ⇒ 门控只等比缩小规模、无净增益 ⇒ 门控族关闭；",
            ">   (i) 不成立 ⇒ 门开着也救不回 ⇒ 回到「通用扰动」结论。", ""]
 
