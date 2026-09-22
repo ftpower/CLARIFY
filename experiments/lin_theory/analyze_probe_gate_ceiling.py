@@ -91,6 +91,54 @@ def ceiling(S):
     return u1, u2
 
 
+
+def _auroc(pos, neg):
+    if not pos or not neg:
+        return float("nan")
+    return sum((a > b) + 0.5 * (a == b) for a in pos for b in neg) / (len(pos) * len(neg))
+
+
+def direction_diagnostics(S, keys, score):
+    """类内分位归一后的两项诊断 + 区间带门（2D 阈值）搜索。
+
+    背景（2026-09-22）：原始分数上"救回 vs 破坏"的 AUROC 会被**类别尺度**混淆
+    （救回在"基线错"类、破坏在"基线对"类，两类分数分布整体错开）⇒ 必须先在类内转分位。
+    """
+    n = len(keys)
+    wrong = [k for k in keys if not S[k]["baseline_correct"]]
+    right = [k for k in keys if S[k]["baseline_correct"]]
+    sc = dict(zip(keys, score))
+
+    def pct(k):
+        pool = sorted(sc[x] for x in (wrong if k in wrong else right))
+        return pool.index(sc[k]) / max(len(pool) - 1, 1)
+
+    prox = {k: (pct(k) if k in wrong else 1 - pct(k)) for k in keys}   # 类内分位：1=最接近边界
+    resc = [k for k in wrong if S[k][f"correct_beta{BETA_MAIN}"]]
+    brk = [k for k in right if not S[k][f"correct_beta{BETA_MAIN}"]]
+    flips, noflip = resc + brk, [k for k in keys if k not in resc and k not in brk]
+
+    a_flip = _auroc([prox[k] for k in flips], [prox[k] for k in noflip])
+    a_dir = _auroc([prox[k] for k in resc], [prox[k] for k in brk])
+
+    # 区间带门：lo <= score <= hi 才干预（比单阈值更一般；含"排除深度错与稳固对"的直觉）
+    vals = sorted(sc.values())
+    grid = [vals[min(n - 1, int(n * p / 40))] for p in range(0, 41)]
+    best = None
+    for lo in grid:
+        for hi in grid:
+            if lo >= hi:
+                continue
+            r = sum(1 for k in wrong if lo <= sc[k] <= hi and S[k][f"correct_beta{BETA_MAIN}"])
+            b = sum(1 for k in right if lo <= sc[k] <= hi and not S[k][f"correct_beta{BETA_MAIN}"])
+            if best is None or (r - b) > best[0]:
+                best = (r - b, lo, hi, r, b, sum(1 for k in keys if lo <= sc[k] <= hi))
+    return {"auroc_flip": a_flip, "auroc_direction": a_dir,
+            "band_best_net": best[0], "band_lo": best[1], "band_hi": best[2],
+            "band_resc": best[3], "band_brk": best[4], "band_open": best[5],
+            "n_resc": len(resc), "n_brk": len(brk)}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="experiments/outputs/probe_gate_ceiling_8b")
@@ -136,13 +184,21 @@ def main():
             a_bal = (rec + spec) / 2
             model_net = a_bal * u1 - (1 - a_bal) * b0
             rows.append((th, sum(open_mask), rec, spec, resc, brk, net, model_net))
+        dd = direction_diagnostics(S, keys, score)
         best = max(rows, key=lambda r: r[6])
         md += ["| θ | 开门数 | recall | spec | 净事件 | 兑现率(U2) | 同 a 随机模型期望 | 惩罚 |",
                "|---|---|---|---|---|---|---|---|"]
         for r in rows[::max(1, len(rows) // 12)] + [best]:
             md.append(f"| {r[0]:+.1f} | {r[1]} | {r[2]:.2f} | {r[3]:.2f} | {r[6]:+d} | "
                       f"{r[6]/u2*100:.0f}% | {r[7]:+.1f} | {r[6]-r[7]:+.1f} |")
-        md += ["", f"- **实测最优门控**：θ={best[0]:+.2f}（recall {best[2]:.2f}/spec {best[3]:.2f}）"
+        md += ["",
+               "**方向可分性诊断（类内分位归一，必报）**：",
+               f"- AUROC(边界接近度 → 是否翻转) = **{dd['auroc_flip']:.3f}**（会不会翻，弱）",
+               f"- AUROC(救回 vs 破坏 | 接近度) = **{dd['auroc_direction']:.3f}**（往哪翻；0.5=不可分）",
+               f"- 区间带门（2D 阈值搜索，`lo≤score≤hi` 才干预）最优 = **{dd['band_best_net']:+d}** "
+               f"（θ∈[{dd['band_lo']:.0f},{dd['band_hi']:.0f}]，开门 {dd['band_open']}，救回 {dd['band_resc']} 破坏 {dd['band_brk']}）"
+               f"  ⇒ 与单阈值门/无门控同档 ⇒ 更一般的门形也无增益",
+               "", f"- **实测最优门控**：θ={best[0]:+.2f}（recall {best[2]:.2f}/spec {best[3]:.2f}）"
                   f"→ 净 {best[6]:+d} = {best[6]/n*100:+.2f}pp，兑现率 **{best[6]/u2*100:.0f}%**（含事后再选 θ，乐观）", ""]
 
         # 精度阶梯：随机误差模型 net(a) = a·U1 − (1−a)·B
@@ -157,7 +213,7 @@ def main():
             md.append(f"| {a:.2f} | {e:+.1f} | {rr:.0f}% |")
         md += ["", "> ⚠️ 该模型假设探针误差与「是否可救或将被破坏」**独立**。"
                    "实测最优门控低于该期望的部分 = **误差相关性惩罚**（探针错在要紧样本上）。", ""]
-        summary[seed] = {"n": n, "U0": net0, "U1": u1, "U2": u2,
+        summary[seed] = {"n": n, "U0": net0, "U1": u1, "U2": u2, "direction": dd,
                          "best_net": best[6], "best_theta": best[0],
                          "best_recall": best[2], "best_spec": best[3],
                          "realization": best[6] / u2, "ladder": ladder}
