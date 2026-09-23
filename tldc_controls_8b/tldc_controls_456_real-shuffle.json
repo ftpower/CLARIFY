@@ -1,0 +1,2548 @@
+{
+ "meta": {
+  "script": "main_tldc_controls.py",
+  "created": "2026-09-22 11:37:35",
+  "theory": "docs/protocol/placebo-control-protocol.md",
+  "arms_doc": {
+   "real": "真实 TLDC（Δ=β·δ）——协议自检臂，须复现已发布数字",
+   "shuffle": "δ 词表随机置换（范数/多重集完全保持，仅破坏 token 对齐）— 主判据",
+   "gauss": "同 L2 范数各向同性高斯（无结构，仅幅度）",
+   "anti": "Δ=−β·δ（方向取反）",
+   "wrong_late": "用 L24 读出替代 ℓ*（范数重标定到 ||δ||）",
+   "wrong_zero": "用 L0 读出替代 ℓ*（范数重标定到 ||δ||）",
+   "gated_margin": "应用门 G1：仅当末层前二 margin < τ 才施加 β·δ（判据=引理 1 的 m）",
+   "gated_betastar": "应用门 G2：仅当 β*_min ≤ β（可负担）才施加 β·δ",
+   "gated_damp": "应用门 G3：margin < τ 时只施加压支 −β·ReLU(−δ)（翻转 100% 由压支驱动的推论）"
+  }
+ },
+ "report": {
+  "config": {
+   "model": "Qwen/Qwen3-8B",
+   "layer_early": 28,
+   "ctrl_layer": 31,
+   "ctrl_layer_zero": 0,
+   "arms": [
+    "real",
+    "shuffle"
+   ],
+   "betas": [
+    0.2
+   ],
+   "n_test": 300,
+   "seed_test": 456,
+   "rank_threshold": 50,
+   "gate_tau": 0.2,
+   "max_new": 20,
+   "output_dir": "experiments/outputs/tldc_controls_8b",
+   "refresh_classify": false,
+   "selftest": false
+  },
+  "arms": {
+   "real_beta0.2": {
+    "arm": "real",
+    "beta": 0.2,
+    "n": 300,
+    "rescue": 15,
+    "break": 7,
+    "net_pp": 2.666666666666667,
+    "mcnemar_p": 0.13380050659179688,
+    "per_subset": {
+     "know_correct": {
+      "n": 115,
+      "bw": 0,
+      "br": 115,
+      "rescue": 0,
+      "break": 3,
+      "rescue_rate": null,
+      "break_rate": 0.02608695652173913
+     },
+     "know_wrong": {
+      "n": 64,
+      "bw": 64,
+      "br": 0,
+      "rescue": 10,
+      "break": 0,
+      "rescue_rate": 0.15625,
+      "break_rate": null
+     },
+     "dont_know": {
+      "n": 121,
+      "bw": 60,
+      "br": 61,
+      "rescue": 5,
+      "break": 4,
+      "rescue_rate": 0.08333333333333333,
+      "break_rate": 0.06557377049180328
+     }
+    },
+    "rescue_kw": "10/64",
+    "rescue_dk": "5/60",
+    "ratio_kw_dk": 1.875,
+    "fisher_kw_vs_dk": 0.16654630720188437,
+    "kw_rescue_ci": [
+     0.07755733180012322,
+     0.26863424426625704
+    ],
+    "break_kc": "3/115",
+    "break_dk": "4/61"
+   },
+   "shuffle_beta0.2": {
+    "arm": "shuffle",
+    "beta": 0.2,
+    "n": 300,
+    "rescue": 6,
+    "break": 11,
+    "net_pp": -1.6666666666666667,
+    "mcnemar_p": 0.332305908203125,
+    "per_subset": {
+     "know_correct": {
+      "n": 115,
+      "bw": 0,
+      "br": 115,
+      "rescue": 0,
+      "break": 6,
+      "rescue_rate": null,
+      "break_rate": 0.05217391304347826
+     },
+     "know_wrong": {
+      "n": 64,
+      "bw": 64,
+      "br": 0,
+      "rescue": 5,
+      "break": 0,
+      "rescue_rate": 0.078125,
+      "break_rate": null
+     },
+     "dont_know": {
+      "n": 121,
+      "bw": 60,
+      "br": 61,
+      "rescue": 1,
+      "break": 5,
+      "rescue_rate": 0.016666666666666666,
+      "break_rate": 0.08196721311475409
+     }
+    },
+    "rescue_kw": "5/64",
+    "rescue_dk": "1/60",
+    "ratio_kw_dk": 4.6875,
+    "fisher_kw_vs_dk": 0.11923592254882198,
+    "kw_rescue_ci": [
+     0.025853840167968115,
+     0.1729783290042075
+    ],
+    "break_kc": "6/115",
+    "break_dk": "5/61"
+   }
+  },
+  "paired_vs_real": {
+   "shuffle_beta0.2": {
+    "b_real_only": 8,
+    "c_ctrl_only": 3,
+    "mcnemar_p": 0.2265625
+   }
+  }
+ },
+ "samples": {
+  "0": {
+   "subset": "know_correct",
+   "rank": 45,
+   "question": "Who wrote the book Don Quixote?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "1": {
+   "subset": "know_wrong",
+   "rank": 13,
+   "question": "Which is the second largest bay in Britain?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "2": {
+   "subset": "dont_know",
+   "rank": 53,
+   "question": "\"Which car company, in 1986, comissioned \"\"Cars\"\", a series of artworks to track",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "3": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "Which boxer was portrayed b Robert De Niro in the film 'Raging Bull'?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "4": {
+   "subset": "know_wrong",
+   "rank": 49,
+   "question": "The first issue of which British children’s comic was published in April 1950?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "5": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "In April, which sportsman married his childhood sweetheart Kim Sears?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "6": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "Was James II known as: James The Bald, Fiery Face, or The Red King?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "7": {
+   "subset": "dont_know",
+   "rank": 35551,
+   "question": "What is the name for the point in the lunar orbit when the moon is nearest to th",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "8": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "'John Paul II International Airport' serves which Polish city?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "9": {
+   "subset": "dont_know",
+   "rank": 1419,
+   "question": "What decoration, a Cross, was first awarded in 1995 to Corporal Wayne Mills for ",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "10": {
+   "subset": "dont_know",
+   "rank": 489,
+   "question": "Who was the wife of Moses?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": true
+  },
+  "11": {
+   "subset": "know_wrong",
+   "rank": 14,
+   "question": "Who narrated the BBC television production of Paddington?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": true
+  },
+  "12": {
+   "subset": "know_correct",
+   "rank": 10,
+   "question": "\"What single word sounds like \"\"Youth in Asia\"\"?\"",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "13": {
+   "subset": "know_correct",
+   "rank": 45,
+   "question": "Admiral Sir John Jellicoe commanded the British fleet at the Battle of Jutland, ",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "14": {
+   "subset": "dont_know",
+   "rank": 53,
+   "question": "What is the distinctive odour of the gas, hydrogen cyanide?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "15": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "What is the next in the series: Carboniferous, Permian, Triassic, Jurassic ?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "16": {
+   "subset": "know_wrong",
+   "rank": 4,
+   "question": "Who was the boss of U.N.C.L.E.?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "17": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "Which musical features the song 'Second Hand Rose'?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "18": {
+   "subset": "dont_know",
+   "rank": 646,
+   "question": "In a car, what can be an 'SU', a 'Weber', or a 'Zenith'?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "19": {
+   "subset": "know_correct",
+   "rank": 12,
+   "question": "The rings of which planet were first detected in 1980 but only identified in 198",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": false
+  },
+  "20": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "Which US state was admitted to the Union in 1876, hence its nickname of 'the Cen",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "21": {
+   "subset": "know_correct",
+   "rank": 3,
+   "question": "What is the flavour of the liqueur Triple-Sec?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": true
+  },
+  "22": {
+   "subset": "know_correct",
+   "rank": 26,
+   "question": "The left side of the heart pumps blood to all parts of the body, but the right s",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "23": {
+   "subset": "know_wrong",
+   "rank": 5,
+   "question": "\"The words \"\"Polyalphaolefins\"\", \"\"dibasic acide esters\"\", \"\"dibasic acide diest",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "24": {
+   "subset": "dont_know",
+   "rank": 275,
+   "question": "Who created St Trinians, a fictional girls' boarding school, the subject of 8 bo",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "25": {
+   "subset": "know_correct",
+   "rank": 3,
+   "question": "At which Winter Olympic host city would you find the Cresta Run?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "26": {
+   "subset": "know_correct",
+   "rank": 12,
+   "question": "\"Who was the target of the failed \"\"Bomb Plot\"\" of 1944?\"",
+   "baseline_correct": true,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "27": {
+   "subset": "dont_know",
+   "rank": 229,
+   "question": "The office of the President of which South American country is La Casa Rosada (T",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "28": {
+   "subset": "know_wrong",
+   "rank": 19,
+   "question": "Who was the 8th President of the United States from 1837- 1841?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "29": {
+   "subset": "know_correct",
+   "rank": 11,
+   "question": "\"In 1743, which English monarch began the tradition, of the audience rising to i",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "30": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "\"In the James Bond film \"\"Goldfinger\"\" who played Bond girl Pussy Galore?\"",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "31": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "Precisely where were the Winter Olympics of 1932 and 1980 both held?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "32": {
+   "subset": "dont_know",
+   "rank": 3209,
+   "question": "The adjective “buccal” refers to which part of the body?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "33": {
+   "subset": "dont_know",
+   "rank": 1656,
+   "question": "\"In which old children's TV programme did the \"\"biggest spotty dog you ever did ",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "34": {
+   "subset": "know_wrong",
+   "rank": 18,
+   "question": "Who became the host of the BBC Radio 1 weekday breakfast show in September 2012?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "35": {
+   "subset": "know_correct",
+   "rank": 5,
+   "question": "\"The musical \"\"Jersey Boys\"\" is based around the music-of-which American pop gro",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "36": {
+   "subset": "know_correct",
+   "rank": 20,
+   "question": "Which one hit wonders charted with They Shoot Horses Don’t They",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "37": {
+   "subset": "know_wrong",
+   "rank": 13,
+   "question": "John and David Lloyd represented Great Britain in the early 1970s at what sport?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": false
+  },
+  "38": {
+   "subset": "know_wrong",
+   "rank": 18,
+   "question": "George W Bush was given which diminutive herbaceous nickname?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "39": {
+   "subset": "know_correct",
+   "rank": 13,
+   "question": "Kagoshima international airport is in which country?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "40": {
+   "subset": "know_correct",
+   "rank": 2,
+   "question": "\"What was the sequel to 'Tom Brown's Schooldays\"\"?\"",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "41": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "What is the capital of the French region of Burgundy?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "42": {
+   "subset": "know_wrong",
+   "rank": 31,
+   "question": "Which Gilbert and Sullivan opera has the alternative title 'The Lass that Loved ",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "43": {
+   "subset": "know_wrong",
+   "rank": 49,
+   "question": "Spider, Idiot’s Delight, Canfield, Pyramid and Clock are all forms of what card ",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "44": {
+   "subset": "know_wrong",
+   "rank": 16,
+   "question": "What was the name of the 1960’s rock band which comprised Eric Clapton, Ginger B",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "45": {
+   "subset": "dont_know",
+   "rank": 176,
+   "question": "Which King of Macedon a great military leader was reputedly never defeated in ba",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "46": {
+   "subset": "know_wrong",
+   "rank": 4,
+   "question": "Yesterday saw the passing of Ed McMahon. What publishing sweepstakes company emp",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "47": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "Which British band released their debut album ‘Definitely Maybe’ in 1994?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "48": {
+   "subset": "dont_know",
+   "rank": 668,
+   "question": "Which was Disney's second animated film?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "49": {
+   "subset": "dont_know",
+   "rank": 226,
+   "question": "Who succeeded Alf Ramsey as England (caretaker) football manager in 1974?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "50": {
+   "subset": "know_correct",
+   "rank": 2,
+   "question": "By whatname are the four novels of Paul Scott best known, the last of which is e",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "51": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "In which city were the 2009 World Athletic Championships held?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "52": {
+   "subset": "know_wrong",
+   "rank": 11,
+   "question": "Which 1969 film starring Jane Fonda is based on the novel by Horace McCoy about ",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "53": {
+   "subset": "dont_know",
+   "rank": 359,
+   "question": "What type of acid is extracted from the juice of lemons, oranges, limes, and gra",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "54": {
+   "subset": "dont_know",
+   "rank": 597,
+   "question": "In the TV sit-com 'Porridge', a youngish David Jason played the part of which ol",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "55": {
+   "subset": "dont_know",
+   "rank": 13638,
+   "question": "\"What city is called \"\"The Big Easy\"\"?\"",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "56": {
+   "subset": "dont_know",
+   "rank": 27119,
+   "question": "Summer Olympic sports are divided into categories based on popularity and the po",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "57": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "Which city is the headquarters of the Mormon church",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "58": {
+   "subset": "dont_know",
+   "rank": 294,
+   "question": "\"Which is the participle in the sentence \"\"he brought the required documents\"\"?\"",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "59": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "When were the first Winter Paralympics held?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "60": {
+   "subset": "dont_know",
+   "rank": 472,
+   "question": "In which film did Bruce Willis play the character 'Harry Stamper'?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "61": {
+   "subset": "know_correct",
+   "rank": 9,
+   "question": "Henry Blake, Charles Winchester and Father Mulcahy are all characters in which U",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "62": {
+   "subset": "dont_know",
+   "rank": 34773,
+   "question": "Who was the female member of the SDP's 'Gang Of Four'?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": false
+  },
+  "63": {
+   "subset": "dont_know",
+   "rank": 60,
+   "question": "John Lloyd Wright, son of famed architect Frank, invented what children's toy?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "64": {
+   "subset": "dont_know",
+   "rank": 489,
+   "question": "On T.V. who played Frank Cannon?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "65": {
+   "subset": "dont_know",
+   "rank": 43105,
+   "question": "What European country has 227 inhabited islands?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "66": {
+   "subset": "know_correct",
+   "rank": 2,
+   "question": "What was first worn by British soldiers in India in 1845?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "67": {
+   "subset": "dont_know",
+   "rank": 59,
+   "question": "b Who was the tallest British Prime Minister of the 20th century?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "68": {
+   "subset": "dont_know",
+   "rank": 122,
+   "question": "Opened in May 11, 2010, Charlotte, NC is the home to the Hall of Fame for what p",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "69": {
+   "subset": "know_wrong",
+   "rank": 2,
+   "question": "Who lured sailors on the Rhine to their deaths with her singing?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "70": {
+   "subset": "dont_know",
+   "rank": 482,
+   "question": "Which of England's 1966 World Cup winning footballers played for Fulham at the t",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "71": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "111,111,111 squared gives what result?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "72": {
+   "subset": "know_correct",
+   "rank": 4,
+   "question": "What is the five-letter name for Norway as used on its stamps?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "73": {
+   "subset": "dont_know",
+   "rank": 23378,
+   "question": "Who directed the 2011 Palme d'Or winning film 'The Tree Of Life'?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "74": {
+   "subset": "know_wrong",
+   "rank": 8,
+   "question": "In the game of Cluedo, what colour is the piece that represents Mrs Peacock?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "75": {
+   "subset": "dont_know",
+   "rank": 280,
+   "question": "Which of the 'Seven Wonders Of The World' stood at Halicarnassus?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "76": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "What is the name for an argument presented in logical form, containing 2 premise",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "77": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "In what film did Oprah Winfrey make her big screen acting debut?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "78": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "Who was the only person to win the BBC TV Sports Personality of the Year twice d",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "79": {
+   "subset": "know_correct",
+   "rank": 47,
+   "question": "In which country is the La Quebrada cliff and the Acapulco Bay at its foot?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "80": {
+   "subset": "know_correct",
+   "rank": 4,
+   "question": "What are Jimmy Reed, Skip James, Elmore James & Big Bill Broonzy best known as?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "81": {
+   "subset": "dont_know",
+   "rank": 9193,
+   "question": "Who won the gold medal for the 100m at the 1992 Olympics at 32 years of age and ",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "82": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "NASA celebrated another anniversary today. In what year was it founded?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "83": {
+   "subset": "dont_know",
+   "rank": 537,
+   "question": "The most southerly part of mainland Australia is in which state?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "84": {
+   "subset": "dont_know",
+   "rank": 122573,
+   "question": "From which Daphne DuMaurier book is the opening line 'Last night I dreamt I went",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "85": {
+   "subset": "dont_know",
+   "rank": 80,
+   "question": "When is Labour Day in the USA, Bermuda and Canada?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": false
+  },
+  "86": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "'Roquefort Cheese' is made from what sort of milk?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "87": {
+   "subset": "know_correct",
+   "rank": 21,
+   "question": "Who played Saffron Monsoon in the UK television comedy series ‘Absolutely Fabulo",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "88": {
+   "subset": "know_wrong",
+   "rank": 6,
+   "question": "Which aperitif is named for the Paris chemist who created it in 1846?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "89": {
+   "subset": "know_wrong",
+   "rank": 44,
+   "question": "Who directed the Michael Jackson video ‘Bad’?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "90": {
+   "subset": "dont_know",
+   "rank": 268,
+   "question": "Who's chart hit 'Walk tall' Started his career in 1964?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "91": {
+   "subset": "dont_know",
+   "rank": 172,
+   "question": "What French region's capital city is Ajaccio?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "92": {
+   "subset": "know_correct",
+   "rank": 5,
+   "question": "If an animal that is active at night is described as 'nocturnal', then what name",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "93": {
+   "subset": "know_wrong",
+   "rank": 45,
+   "question": "'Citizen Smith' was the creation of which TV writer?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "94": {
+   "subset": "know_wrong",
+   "rank": 13,
+   "question": "What was Mumbai formerly called?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "95": {
+   "subset": "know_wrong",
+   "rank": 19,
+   "question": "What was the name of the letters that in 1566 implicated Mary Queen of Scots in ",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "96": {
+   "subset": "know_correct",
+   "rank": 2,
+   "question": "Although not the state capital, which is the largest city in the U.S. state of N",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "97": {
+   "subset": "dont_know",
+   "rank": 6804,
+   "question": "What is the capital of Indonesia?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "98": {
+   "subset": "dont_know",
+   "rank": 6712,
+   "question": "Which actress and singer's biography was entitled 'The Other Side Of The Rainbow",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "99": {
+   "subset": "dont_know",
+   "rank": 1922,
+   "question": "Which literary location did John Jarndyce own?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": false
+  },
+  "100": {
+   "subset": "dont_know",
+   "rank": 1329,
+   "question": "\"In David Hockney's painting \"\"Mr and Mrs Clark and Percy\"\", what is Percy?\"",
+   "baseline_correct": true,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "101": {
+   "subset": "know_wrong",
+   "rank": 21,
+   "question": "What is being built in the Olympic Park, that will be the world's longest and ta",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "102": {
+   "subset": "dont_know",
+   "rank": 405,
+   "question": "Which 1960's British group originally comprised EricClapton, Steve Winwood, Ging",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "103": {
+   "subset": "know_correct",
+   "rank": 30,
+   "question": "Which insects live in a vespiary?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "104": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "Who was the Poet Laureate at the time of the Coronation of Queen Elizabeth II?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "105": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "b What was John Wayne's last film, in 1976?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "106": {
+   "subset": "know_correct",
+   "rank": 8,
+   "question": "Brian Connelly was the lead singer with which group?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "107": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "Which religion was founded by Guru Nanak in the 16th Century?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "108": {
+   "subset": "know_wrong",
+   "rank": 1,
+   "question": "What is the minimum number of darts a person needs to throw to complete a leg fr",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "109": {
+   "subset": "know_wrong",
+   "rank": 1,
+   "question": "How many times did Actress Zsa Zsa Gabor marry?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "110": {
+   "subset": "dont_know",
+   "rank": 2325,
+   "question": "Goliath is the name for a South American spider that eats what?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "111": {
+   "subset": "dont_know",
+   "rank": 89,
+   "question": "What gas, symbol F, is the most reactive of all chemical elements?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "112": {
+   "subset": "know_wrong",
+   "rank": 11,
+   "question": "\"Which organisation runs the undergraduate college in Annapolis, Maryland, USA, ",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": true
+  },
+  "113": {
+   "subset": "know_correct",
+   "rank": 4,
+   "question": "What item of headwear is associated with Sherlock Holmes?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "114": {
+   "subset": "know_wrong",
+   "rank": 1,
+   "question": "Which was the second British motorway",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "115": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "What 'seasonal-mood' name was given to the western social phenomenon of mid-1967",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "116": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "Who designed the Adidas sportswear for the British Olympic and Paralympics teams",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "117": {
+   "subset": "know_wrong",
+   "rank": 4,
+   "question": "Anaheim, Bell, Hungarian Wax, Poblano, and Scotch Bonnet are all types of what?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "118": {
+   "subset": "know_wrong",
+   "rank": 1,
+   "question": "Give a year in the life of Irish playwright and poet John Millington Synge.",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "119": {
+   "subset": "know_wrong",
+   "rank": 19,
+   "question": "Who declared the 1936 summer Olympic Games open? (Both names required.)",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "120": {
+   "subset": "know_correct",
+   "rank": 7,
+   "question": "The Battle of Kadesh in 1274 BC that took place between the forces of the Egypti",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "121": {
+   "subset": "know_wrong",
+   "rank": 1,
+   "question": "Whose alter ego is Sasha Fierce?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "122": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "From which Shakespeare play does the phrase 'the green-eyed monster' originate?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "123": {
+   "subset": "dont_know",
+   "rank": 11143,
+   "question": "Which city, since the 14th century BC, has been controlled by Israelites, Judaea",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "124": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "Which football team plays its home games at Portman Road?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "125": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "From which animal does Haggis come?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "126": {
+   "subset": "know_wrong",
+   "rank": 2,
+   "question": "\"What actor played the father on \"\"Little House on the Prairie\"\"?\"",
+   "baseline_correct": false,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "127": {
+   "subset": "dont_know",
+   "rank": 92,
+   "question": "Which canal separates the Peloponnese peninsula from the Greek mainland?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "128": {
+   "subset": "know_wrong",
+   "rank": 28,
+   "question": "What is the middle name of US actor Samuel L Jackson?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "129": {
+   "subset": "know_wrong",
+   "rank": 47,
+   "question": "Who painted Luncheon of the Boating Party?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "130": {
+   "subset": "know_wrong",
+   "rank": 10,
+   "question": "\"What was special about \"\"The Daily Courant\"\" that appeared in the early 18th ce",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "131": {
+   "subset": "know_correct",
+   "rank": 44,
+   "question": "By what name was the artist Jacopo Comin (or Jacopo Robusti) better known?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "132": {
+   "subset": "dont_know",
+   "rank": 4584,
+   "question": "The 3rd of his vice presidents (after John Nance Garner and Henry Wallace), who ",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "133": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "What animated character does Gene Kelly dance with in the film Anchors Aweigh?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "134": {
+   "subset": "know_correct",
+   "rank": 40,
+   "question": "Which indigenous people call their country Aotearoa?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "135": {
+   "subset": "know_correct",
+   "rank": 6,
+   "question": "Which mediaeval author wrote The Canterbury Tales",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "136": {
+   "subset": "dont_know",
+   "rank": 500,
+   "question": "Who had an 80s No 1 hit with Hold On To The Nights?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "137": {
+   "subset": "know_wrong",
+   "rank": 1,
+   "question": "In which form of pool (pocket billiards) are the balls formed into a diamond pat",
+   "baseline_correct": false,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "138": {
+   "subset": "dont_know",
+   "rank": 5673,
+   "question": "\"In the TV version of \"\"The Odd Couple\"\", the part of Felix Ungar was played by ",
+   "baseline_correct": false,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": false
+  },
+  "139": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "What is the surname of the film director whose first names are Francis Ford?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "140": {
+   "subset": "know_correct",
+   "rank": 2,
+   "question": "What is the name of the helicopter used to transport the President of the United",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "141": {
+   "subset": "know_wrong",
+   "rank": 3,
+   "question": "Who played the female lead in the 1957 film 'An Affair To Remember'?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": false
+  },
+  "142": {
+   "subset": "dont_know",
+   "rank": 409,
+   "question": "Which 1987 US film was based on the 1985 French film ‘Trois hommes et un couffin",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "143": {
+   "subset": "dont_know",
+   "rank": 301,
+   "question": "Who composed the Liverpool Oratorio in collaboration with Carl Davis?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "144": {
+   "subset": "dont_know",
+   "rank": 1041,
+   "question": "How is Dihydrogen Monoxide better known?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "145": {
+   "subset": "dont_know",
+   "rank": 51,
+   "question": "In Greek mythology, what was hanging by a single horse hair over Damacles, after",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "146": {
+   "subset": "know_wrong",
+   "rank": 5,
+   "question": "The flag of Libya is a plain rectangle of which color?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "147": {
+   "subset": "dont_know",
+   "rank": 3429,
+   "question": "What is the only country in which the Komodo Dragon is found in the wild?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "148": {
+   "subset": "dont_know",
+   "rank": 328,
+   "question": "In the Kipling story Rikki-Tikki-Tavi, the title character defends his adopted f",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "149": {
+   "subset": "know_correct",
+   "rank": 12,
+   "question": "' Ophidian ' refers to what kind of creatures ?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "150": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "What is the capital of Algeria",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "151": {
+   "subset": "know_wrong",
+   "rank": 6,
+   "question": "The lahara, used in the liqueur Curacao, is an adaptation of which common fruit?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": false
+  },
+  "152": {
+   "subset": "know_wrong",
+   "rank": 3,
+   "question": "What is the official residence of the Lord Mayor of London ?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": false
+  },
+  "153": {
+   "subset": "dont_know",
+   "rank": 94667,
+   "question": "What was the name of the Cunard ocean liner which was launched on 20th September",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "154": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "What is the capital of the French region of Burgundy?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "155": {
+   "subset": "dont_know",
+   "rank": 8869,
+   "question": "After USA, what is the largest country in the world named after a person?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "156": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "The Fitzwilliam Museum is in which English city?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "157": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "Who played Dr Richard Kimble in the 1993 film The Fugitive?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "158": {
+   "subset": "dont_know",
+   "rank": 63681,
+   "question": "What was the middle name of the character 'Albert Steptoe' from the t.v. series ",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "159": {
+   "subset": "dont_know",
+   "rank": 1256,
+   "question": "On a standard dartboard, which number lies opposite number 4?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "160": {
+   "subset": "know_correct",
+   "rank": 37,
+   "question": "The composer Frdric Chopin had a decade-long affair with which French author?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "161": {
+   "subset": "dont_know",
+   "rank": 8155,
+   "question": "Used in cooking, agar-agar is a gelatin made from what?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "162": {
+   "subset": "dont_know",
+   "rank": 30757,
+   "question": "In one of Walter Scott's Waverley' novels what was The Heart of Midlothian?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "163": {
+   "subset": "dont_know",
+   "rank": 14795,
+   "question": "Which state in North America has the oldest known currently living tree, age con",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "164": {
+   "subset": "know_wrong",
+   "rank": 21,
+   "question": "What is the fictional location of the tv soap ‘Eastenders’?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "165": {
+   "subset": "dont_know",
+   "rank": 2893,
+   "question": "Who designed St Paul’s Cathedral in London?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": false
+  },
+  "166": {
+   "subset": "dont_know",
+   "rank": 163,
+   "question": "The Malagasy people form the main ethnic group of which country?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "167": {
+   "subset": "dont_know",
+   "rank": 225,
+   "question": "Who founded the Body Shop, in the UK, in 1976?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "168": {
+   "subset": "dont_know",
+   "rank": 4486,
+   "question": "What was the surname of the Alice - the inspiration of Alice in Wonderland?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "169": {
+   "subset": "know_wrong",
+   "rank": 49,
+   "question": "In language/text a 'tittle' commonly refers to what feature of a letter?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "170": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "For how long did the Sleeping Beauty fall asleep according to most versions of t",
+   "baseline_correct": true,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": true
+  },
+  "171": {
+   "subset": "dont_know",
+   "rank": 4027,
+   "question": "In which Thomas Hardy novel does Michael Henchard appear?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "172": {
+   "subset": "dont_know",
+   "rank": 776,
+   "question": "Antananarivo is the capital of which country?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "173": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "'Encephalitis' affects which part of the body?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "174": {
+   "subset": "know_correct",
+   "rank": 8,
+   "question": "American jazz musician Art Tatum excelled on which instrument?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "175": {
+   "subset": "know_correct",
+   "rank": 14,
+   "question": "In the 1968 film Chitty Chitty Bang Bang who buys the car from garage owner Mr C",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "176": {
+   "subset": "know_correct",
+   "rank": 10,
+   "question": "The Kremlin is situated in which city?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "177": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "Which famous book features the character of Bob Cratchit?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "178": {
+   "subset": "know_wrong",
+   "rank": 2,
+   "question": "The song 'Wunderbar' comes from which Cole Porter musical?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": false
+  },
+  "179": {
+   "subset": "know_correct",
+   "rank": 2,
+   "question": "In 1818, British obstetrician James Blundell performed the first successful huma",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "180": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "\"According to an advertising campaign in the 1990s, what beer was \"\"The cream of",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "181": {
+   "subset": "dont_know",
+   "rank": 94,
+   "question": "Who was the last British athlete to compete in the Olympic 100 metres final?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "182": {
+   "subset": "know_correct",
+   "rank": 2,
+   "question": "What are the names of Donald Duck's three nephews?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": false
+  },
+  "183": {
+   "subset": "know_wrong",
+   "rank": 3,
+   "question": "In which city did Dylan Thomas die?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "184": {
+   "subset": "dont_know",
+   "rank": 821,
+   "question": "Who played Grandad in the UK television series ‘Only Fools and Horses’?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "185": {
+   "subset": "dont_know",
+   "rank": 39260,
+   "question": "In the nursery rhyme, which was the last creature eaten by the woman who swallow",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "186": {
+   "subset": "dont_know",
+   "rank": 331,
+   "question": "What is Tom Cruise’s job in the 1996 film ‘Jerry Maguire’?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "187": {
+   "subset": "know_correct",
+   "rank": 2,
+   "question": "What is the largest lake in Central America?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "188": {
+   "subset": "know_correct",
+   "rank": 27,
+   "question": "Who wrote The Sea Wolf",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "189": {
+   "subset": "know_correct",
+   "rank": 3,
+   "question": "Amarelo is Portuguese for which colour?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "190": {
+   "subset": "know_correct",
+   "rank": 22,
+   "question": "What name is given to a positive whole number that can only be divided by 1 or i",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "191": {
+   "subset": "know_correct",
+   "rank": 17,
+   "question": "'Ol' Blue Eyes' is the nickname of?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "192": {
+   "subset": "know_wrong",
+   "rank": 3,
+   "question": "What name is given to the change of state from liquid to gas?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": false
+  },
+  "193": {
+   "subset": "dont_know",
+   "rank": 61764,
+   "question": "Libya was a colony of which European country prior to World War II?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "194": {
+   "subset": "dont_know",
+   "rank": 1498,
+   "question": "Who played the role of painter Vincent Van Gogh in the film Lust For Life",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "195": {
+   "subset": "dont_know",
+   "rank": 262,
+   "question": "Which country's coalition government, led by Jan-Peter Balkenende, collapsed in ",
+   "baseline_correct": false,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": false
+  },
+  "196": {
+   "subset": "dont_know",
+   "rank": 903,
+   "question": "What is the Latin for wolf spider?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "197": {
+   "subset": "dont_know",
+   "rank": 4488,
+   "question": "In cooking Florentine means garnished with which vegetable?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "198": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "Which giant hunter of Greek mythology was shot dead with an arrow fired by the g",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "199": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "Which female singer won her second Mercury Music Prize in 2011 for her album let",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "200": {
+   "subset": "dont_know",
+   "rank": 144,
+   "question": "John F Kennedy suffered from chronic back complaints and what other medical prob",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": false
+  },
+  "201": {
+   "subset": "know_wrong",
+   "rank": 4,
+   "question": "What 1945 film won best picture, actor, director Oscars?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "202": {
+   "subset": "dont_know",
+   "rank": 26364,
+   "question": "Which European country hosted the 1956 Winter Olympic Games?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "203": {
+   "subset": "dont_know",
+   "rank": 28499,
+   "question": "In what city would you find Yale University?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "204": {
+   "subset": "know_correct",
+   "rank": 2,
+   "question": "An encephalogram is an X-Ray photograph of which part of the human body?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "205": {
+   "subset": "know_wrong",
+   "rank": 21,
+   "question": "Otis Barton was a pioneer in exploring where?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "206": {
+   "subset": "know_wrong",
+   "rank": 5,
+   "question": "Which British stage director won an Oscar for his feature-film directing debut, ",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "207": {
+   "subset": "know_wrong",
+   "rank": 9,
+   "question": "\"The musical \"\"The Sound of Music\"\" is associated with which geographical area?\"",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "208": {
+   "subset": "know_wrong",
+   "rank": 2,
+   "question": "Matthias Sammer, Ronaldo, Zinedine Zidane, Rivaldo, and Luis Figo won what betwe",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "209": {
+   "subset": "know_correct",
+   "rank": 8,
+   "question": "Which organisation was founded in Ontario, Canada in 1897 by Adelaide Hoodless?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "210": {
+   "subset": "know_correct",
+   "rank": 2,
+   "question": "What item of headwear is associated with Sherlock Holmes?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "211": {
+   "subset": "dont_know",
+   "rank": 2624,
+   "question": "What was the title of Status Quo's first UK No. 1 hit?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "212": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "Which British Prime Minister was born in Portsmouth in 1912?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "213": {
+   "subset": "dont_know",
+   "rank": 279,
+   "question": "The 'Scharnhorst' and the 'Prinz Eugen' defied the Royal Navy to sail the length",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "214": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "Which toy won the award for Toy of the Year in 1997 ? It came under controversy ",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "215": {
+   "subset": "know_correct",
+   "rank": 2,
+   "question": "From which musical does the song 'Younger than Springtime' come?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "216": {
+   "subset": "know_correct",
+   "rank": 24,
+   "question": "Astrakhan is the curly hair of which young animal?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": false
+  },
+  "217": {
+   "subset": "know_wrong",
+   "rank": 2,
+   "question": "What is the name of the island formed by volcanic action off the south coast of ",
+   "baseline_correct": false,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": false
+  },
+  "218": {
+   "subset": "dont_know",
+   "rank": 639,
+   "question": "Center, Offensive guard, Offensive tackle, Tight end, Wide receiver, Fullback, R",
+   "baseline_correct": true,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": true
+  },
+  "219": {
+   "subset": "dont_know",
+   "rank": 2405,
+   "question": "According to L Frank Baum's 'The Wonderful Wizard of Oz', the Road to the City o",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "220": {
+   "subset": "dont_know",
+   "rank": 1382,
+   "question": "Which ship did Drake command against the Spanish Armada?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "221": {
+   "subset": "know_wrong",
+   "rank": 10,
+   "question": "\"Who starred in and directed the 2004 movie \"\"Beyond the Sea\"\"?\"",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "222": {
+   "subset": "dont_know",
+   "rank": 168,
+   "question": "Which county won the County Cricket Championship in 1959, after Surrey had won s",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "223": {
+   "subset": "dont_know",
+   "rank": 89,
+   "question": "Denmark has a single land border; with which country?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "224": {
+   "subset": "know_wrong",
+   "rank": 25,
+   "question": "Give either Christian name of the writer A.J. Cronin?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "225": {
+   "subset": "dont_know",
+   "rank": 63,
+   "question": "Len Martin, who read the football results on BBC from 1958 until his death in 19",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "226": {
+   "subset": "dont_know",
+   "rank": 67817,
+   "question": "Tennis player Martina Hingis was born in which European country?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "227": {
+   "subset": "know_correct",
+   "rank": 13,
+   "question": "\"What does the Latin phrase \"\"primus inter pares \"\" mean?\"",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "228": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "In 1960, who co-founded Motor Racing Developments Ltd., a British racing car man",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "229": {
+   "subset": "dont_know",
+   "rank": 157,
+   "question": "Who was the landlady of the Rovers Return when Coronation Street was first broad",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "230": {
+   "subset": "dont_know",
+   "rank": 96,
+   "question": "Which film starring Reese Witherspoon had the same title as a hit by Lynyrd Skyn",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "231": {
+   "subset": "know_wrong",
+   "rank": 1,
+   "question": "How many episodes of Prisoner: Cell Block H were made?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "232": {
+   "subset": "dont_know",
+   "rank": 978,
+   "question": "In which year did children’s television show ‘Sesame Street’ debut on US televis",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "233": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "Which female singer had a top ten hit in 1998 with My Favourite Mistake",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "234": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "Sergio Leone, Otto Preminger, Fritz Lang and Fred Zinnemann are famous 20thC?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "235": {
+   "subset": "dont_know",
+   "rank": 138575,
+   "question": "What type of food in the United States are Brown Bobbies",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "236": {
+   "subset": "dont_know",
+   "rank": 4680,
+   "question": "Who had chart hits which included Annie`s Song and Rocky Mountain High?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "237": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "In Greek mythology who was the god of the north winds?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "238": {
+   "subset": "know_wrong",
+   "rank": 10,
+   "question": "For which movie did Katharine Hepburn win her second Oscar?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "239": {
+   "subset": "know_correct",
+   "rank": 3,
+   "question": "According to famous American architect Louis Henri Sullivan, known as the father",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "240": {
+   "subset": "dont_know",
+   "rank": 7452,
+   "question": "\"In what country, between the 1950s and 1980, would one have found \"\"Rusticated ",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": true
+  },
+  "241": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "Who wrote the lyrics for 'Sing', written to celebrate the Queen's Diamond Jubile",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "242": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "What is an alternative name for members of the Church of Jesus Christ of Latter ",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "243": {
+   "subset": "dont_know",
+   "rank": 651,
+   "question": "What is prussic acid, found in bitter almonds and laurel leaves, also known as?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "244": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "The Flying Pickets were a British vocal group who had Christmas no1 hit in 1983.",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "245": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "As at 2012 Goulburn Correctional Centre is considered the highest security priso",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "246": {
+   "subset": "know_correct",
+   "rank": 3,
+   "question": "Who wrote the novel The Life of Pi?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "247": {
+   "subset": "dont_know",
+   "rank": 92,
+   "question": "A democracy is a society ruled by the people. What name is given to a society ru",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "248": {
+   "subset": "know_wrong",
+   "rank": 9,
+   "question": "'(What?) integration' refers to a corporation acquiring or otherwise taking cont",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "249": {
+   "subset": "dont_know",
+   "rank": 43519,
+   "question": "In which town is the most northerly cricket Test venue in the world?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "250": {
+   "subset": "dont_know",
+   "rank": 1442,
+   "question": "In 2012 Harvard professor Jonathan Tilley announced research apparently proving ",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "251": {
+   "subset": "dont_know",
+   "rank": 10464,
+   "question": "\"What is the name of the principle that \"\"if two explanations account equally we",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "252": {
+   "subset": "know_wrong",
+   "rank": 18,
+   "question": "Edward Elgar was appointed Master of the King’s Musick to which monarch?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "253": {
+   "subset": "know_correct",
+   "rank": 4,
+   "question": "It rubs the lotion on its skin or else it gets the what again?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "254": {
+   "subset": "know_wrong",
+   "rank": 1,
+   "question": "Vermillion is a shade of which colour?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "255": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "\"Who produces the perfumes \"\"Opium\"\" and \"\"Rive Gauche\"\"?\"",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "256": {
+   "subset": "dont_know",
+   "rank": 4582,
+   "question": "What was the name of the old Waddington’s game based on newspapers?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "257": {
+   "subset": "dont_know",
+   "rank": 11250,
+   "question": "What was Tony Blair’s constituency?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "258": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "In which book did Edgar Linton marry Catherine Eamshaw?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "259": {
+   "subset": "dont_know",
+   "rank": 1791,
+   "question": "In what European city was snooker player John Higgins stung by the News of the W",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "260": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "Which famous employee-owned UK retailer's slogan is 'Never Knowingly Undersold'?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "261": {
+   "subset": "know_wrong",
+   "rank": 9,
+   "question": "Who was the French composer of the ballet Giselle?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "262": {
+   "subset": "dont_know",
+   "rank": 667,
+   "question": "How often does a Hebdomadal Council meet?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "263": {
+   "subset": "dont_know",
+   "rank": 161,
+   "question": "To what note is the top string on a six-string guitar normally tuned?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "264": {
+   "subset": "dont_know",
+   "rank": 9540,
+   "question": "The Order of the Elephant is the highest order of which country?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "265": {
+   "subset": "dont_know",
+   "rank": 1315,
+   "question": "From which country was Fulgencio Batista ousted in 1959?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "266": {
+   "subset": "know_correct",
+   "rank": 10,
+   "question": "The remains of which ancient city were discovered by Heinrich Schliemann in the ",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "267": {
+   "subset": "dont_know",
+   "rank": 3224,
+   "question": "The Reign Of Terror was a period in the revolution of which country?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "268": {
+   "subset": "know_wrong",
+   "rank": 7,
+   "question": "At which battle of 2 December 1805 did Napoleon defeat a combined Austrian-Russi",
+   "baseline_correct": false,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": false
+  },
+  "269": {
+   "subset": "know_wrong",
+   "rank": 4,
+   "question": "What is the correct name for a virgin (un-calfed) cow?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "270": {
+   "subset": "dont_know",
+   "rank": 659,
+   "question": "What nickname did the American media give to Jane Fonda during the Vietnam War?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "271": {
+   "subset": "dont_know",
+   "rank": 82,
+   "question": "\"By what 4 letter word is the \"\"bulb\"\" of a crocus more correctly known?\"",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": false
+  },
+  "272": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "Which sea lies off the Great Barrier Reef?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "273": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "Who resigned in October 1983 after a scandal over his ‘lovechild’?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "274": {
+   "subset": "dont_know",
+   "rank": 24801,
+   "question": "What was the name of the German encryption machine whose code was deciphered at ",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "275": {
+   "subset": "dont_know",
+   "rank": 6337,
+   "question": "What boy band is Harry Styles a member of?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "276": {
+   "subset": "know_correct",
+   "rank": 4,
+   "question": "In which 1993 film does a boy called Jonah write to a woman called Annie, asking",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": false
+  },
+  "277": {
+   "subset": "dont_know",
+   "rank": 14552,
+   "question": "What was the parliamentary constituency of Tony Blair when he was leader of the ",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "278": {
+   "subset": "dont_know",
+   "rank": 220,
+   "question": "What German battleship was sunk in December 1943 during the Battle of the North ",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "279": {
+   "subset": "know_wrong",
+   "rank": 16,
+   "question": "How did Alice get into Wonderland?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "280": {
+   "subset": "know_correct",
+   "rank": 1,
+   "question": "In Greek mythology which son of Telamon fought Hector in single combat",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "281": {
+   "subset": "dont_know",
+   "rank": 206,
+   "question": "How was Lady Mallowan better known?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": false
+  },
+  "282": {
+   "subset": "know_correct",
+   "rank": 38,
+   "question": "Who is the current World Snooker Champion?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "283": {
+   "subset": "know_correct",
+   "rank": 13,
+   "question": "\"In what sport are the \"\"stones\"\" aimed at the \"\"house\"\"?\"",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": false
+  },
+  "284": {
+   "subset": "dont_know",
+   "rank": 2181,
+   "question": "What is the county town of Mayo?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "285": {
+   "subset": "know_correct",
+   "rank": 6,
+   "question": "\"In which song does the singer sing about \"\"the way you wear your hat, the way y",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "286": {
+   "subset": "dont_know",
+   "rank": 185,
+   "question": "First debuting in the cartoon Mickey's Review, what classic turtle neck wearing ",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "287": {
+   "subset": "dont_know",
+   "rank": 69,
+   "question": "Mallard, Mandarin, Red-crested Pochard, Teal, Muscovy and Eider are all types of",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "288": {
+   "subset": "know_correct",
+   "rank": 11,
+   "question": "For what did Einstien gat Nobel prize in Physics?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "289": {
+   "subset": "dont_know",
+   "rank": 6723,
+   "question": "Which US president, who had a birthday on August 19, was born in Hope, Arkansas?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": true
+  },
+  "290": {
+   "subset": "dont_know",
+   "rank": 69,
+   "question": "What is the name of the five horizontal lines on and between which musical notes",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "291": {
+   "subset": "dont_know",
+   "rank": 78,
+   "question": "What is the name of the document issued, by law, giving information about a comp",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "292": {
+   "subset": "know_wrong",
+   "rank": 2,
+   "question": "What colour is the wax covering Gouda cheese",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": true
+  },
+  "293": {
+   "subset": "know_correct",
+   "rank": 27,
+   "question": "Who won the 1997 Booker prize for the novel 'The God of Small Things'?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "294": {
+   "subset": "know_wrong",
+   "rank": 33,
+   "question": "Which craft involves using knots and hitches to make textiles?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "295": {
+   "subset": "dont_know",
+   "rank": 1312,
+   "question": "Juba is the capital of which country?",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "296": {
+   "subset": "know_correct",
+   "rank": 3,
+   "question": "Which UK television chef made Earl Grey and mandarin hot cross buns for Waitrose",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  },
+  "297": {
+   "subset": "know_wrong",
+   "rank": 30,
+   "question": "What long running public radio program, and short lived TV series, debuted in 19",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "298": {
+   "subset": "dont_know",
+   "rank": 765,
+   "question": "Which star is as bright as 23 Suns, and is orbited by the Pup?",
+   "baseline_correct": false,
+   "correct_real_beta0.2": false,
+   "correct_shuffle_beta0.2": false
+  },
+  "299": {
+   "subset": "dont_know",
+   "rank": 330,
+   "question": "Tomorrow marks the 109th anniversary of which great American taking the reins of",
+   "baseline_correct": true,
+   "correct_real_beta0.2": true,
+   "correct_shuffle_beta0.2": true
+  }
+ }
+}
