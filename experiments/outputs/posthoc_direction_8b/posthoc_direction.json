@@ -1,0 +1,119 @@
+{
+ "n": {
+  "total": 600,
+  "rescue": 30,
+  "break": 16
+ },
+ "verdict": {
+  "post_beta": {
+   "auroc": 0.6801242236024845,
+   "ci": [
+    0.5,
+    0.8571428571428571
+   ],
+   "n_post": 23,
+   "n_brk": 14,
+   "median_rescue": 0.605654776096344,
+   "median_break": 0.3621966987848282,
+   "is_post": true
+  },
+  "post_margin": {
+   "auroc": 0.59375,
+   "ci": [
+    0.41041666666666665,
+    0.75625
+   ],
+   "n_post": 30,
+   "n_brk": 16,
+   "median_rescue": 2.5,
+   "median_break": 2.0546875,
+   "is_post": true
+  },
+  "post_Rsize": {
+   "auroc": 0.38229166666666664,
+   "ci": [
+    0.21666666666666667,
+    0.5520833333333334
+   ],
+   "n_post": 30,
+   "n_brk": 16,
+   "median_rescue": 13.5,
+   "median_break": 48.5,
+   "is_post": true
+  },
+  "post_agree": {
+   "auroc": 0.5541666666666667,
+   "ci": [
+    0.44166666666666665,
+    0.6666666666666666
+   ],
+   "n_post": 30,
+   "n_brk": 16,
+   "median_rescue": 0.0,
+   "median_break": 0.0,
+   "is_post": true
+  },
+  "pre_beta": {
+   "auroc": 0.2833333333333333,
+   "ci": [
+    0.12,
+    0.45666666666666667
+   ],
+   "n_post": 25,
+   "n_brk": 12,
+   "median_rescue": 0.18533886969089508,
+   "median_break": 0.5272487699985504,
+   "is_post": false
+  },
+  "pre_margin": {
+   "auroc": 0.3081896551724138,
+   "ci": [
+    0.15301724137931033,
+    0.47198275862068967
+   ],
+   "n_post": 29,
+   "n_brk": 16,
+   "median_rescue": 1.921875,
+   "median_break": 5.0625,
+   "is_post": false
+  }
+ },
+ "projection": {
+  "0.0": {
+   "rescue_kept": 30,
+   "break_kept": 16,
+   "net": 14,
+   "note": "None 视作保留（β*→∞）"
+  },
+  "0.2": {
+   "rescue_kept": 26,
+   "break_kept": 14,
+   "net": 12,
+   "note": "None 视作保留（β*→∞）"
+  },
+  "0.3": {
+   "rescue_kept": 26,
+   "break_kept": 12,
+   "net": 14,
+   "note": "None 视作保留（β*→∞）"
+  },
+  "0.5": {
+   "rescue_kept": 20,
+   "break_kept": 6,
+   "net": 14,
+   "note": "None 视作保留（β*→∞）"
+  },
+  "0.7": {
+   "rescue_kept": 14,
+   "break_kept": 3,
+   "net": 11,
+   "note": "None 视作保留（β*→∞）"
+  },
+  "0.9": {
+   "rescue_kept": 9,
+   "break_kept": 3,
+   "net": 6,
+   "note": "None 视作保留（β*→∞）"
+  }
+ }
+}
