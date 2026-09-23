@@ -108,9 +108,43 @@ ARM_DOC = {
     "verified_sym": "验证器臂：每步算对称 TLDC 翻转；若与基线 argmax 不同，则做【一步前瞻】——"
                     "在新前缀上读 β*_min，≥θ 保留翻转、<θ 回退为基线 token"
                     "（θ 由 --verify_theta 预注册，默认 0.5；None＝R 空＝翻不动＝保留）",
+    # ── 验证器安慰剂臂（2026-09-23 新增：V1 的 footprint 混淆排除）──
+    "verified_rand": "安慰剂验证臂（footprint 匹配）：与 verified_sym **同一翻转规则**，但**不读** β*_min ——"
+                     "保留/回退用 seeded Bernoulli(p) 随机决定，p 由 --verify_keep_prob 逐子集标定"
+                     "（＝ V1 实测 keep_rate_of_flips，只按决策计数标定、不看结果）⇒ 只保留「扰动步数」"
+                     "成分、破坏「选择信息」成分。⚠️ 首次决策分歧后轨迹分叉 ⇒ 翻转集只在分叉前与"
+                     "verified_sym 相同（与门控臂同款的轨迹级限制，非实现缺陷）。"
+                     "判读：verified_sym vs verified_rand",
 }
 GATED_ARMS = ("gated_margin", "gated_betastar", "gated_damp")
-VERIFY_ARMS = ("verified_sym",)
+VERIFY_ARMS = ("verified_sym",)          # 真验证器（用 β*_min 信息）
+VERIFY_RAND_ARMS = ("verified_rand",)    # 安慰剂（同机器、随机决策）
+VERIFY_FAMILY = VERIFY_ARMS + VERIFY_RAND_ARMS
+
+
+def parse_keep_prob(spec):
+    """解析 `--verify_keep_prob`：单标量 → 全体同一 p；`sub=p,sub=p` → 逐子集 p（缺失回退 _default）。
+
+    ⚠️ p 是**footprint 匹配参数**（由 V1 实测保留率标定），不是待优化超参、不得按结果调。
+    """
+    spec = str(spec).strip()
+    if "=" not in spec:
+        return {"_default": float(spec)}
+    out = {}
+    for part in spec.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        k, _, v = part.partition("=")
+        out[k.strip()] = float(v)
+    if "_default" not in out:
+        out["_default"] = sum(out.values()) / len(out) if out else 0.65
+    return out
+
+
+def keep_prob_for(spec_map, subset):
+    """取该子集的保留概率（无该子集条目则用 _default）。"""
+    return spec_map.get(subset, spec_map["_default"])
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -213,6 +247,7 @@ def controlled_greedy_generate(
     sample_id=0,
     gate_tau=0.2,
     verify_theta=0.5,
+    keep_prob=0.65,
 ):
     """贪心生成，每步施加对照/门控扰动；返回 (文本, 扰动范数比列表, 门控/验证统计)。"""
     tokens = model.to_tokens(prompt, prepend_bos=True)
@@ -240,9 +275,10 @@ def controlled_greedy_generate(
     gate_flags = []
     gate_diags = []
     vstat = None
-    if arm in VERIFY_ARMS:
+    if arm in VERIFY_FAMILY:
         vstat = {"n_noflip": 0, "n_flip": 0, "n_kept": 0, "n_kept_inf": 0,
-                 "n_reverted": 0, "kept_beta_sum": 0.0, "rev_beta_sum": 0.0}
+                 "n_reverted": 0, "kept_beta_sum": 0.0, "rev_beta_sum": 0.0,
+                 "n_kept_beta": 0, "n_rev_beta": 0}
     nid = None
     for step in range(max_new):
         with torch.no_grad():
@@ -261,7 +297,7 @@ def controlled_greedy_generate(
         gen = torch.Generator(device=delta.device)
         gen.manual_seed(1234 + 7919 * sample_id + 31 * step + arm_offset)
 
-        if arm in VERIFY_ARMS:
+        if arm in VERIFY_FAMILY:
             # 一步前瞻验证：先算对称 TLDC 会翻成什么；只在与基线不同时才付出前瞻代价
             nid_base = int(l_final.argmax(dim=-1).item())
             nid_sym = int((l_final + beta * delta).argmax(dim=-1).item())
@@ -271,17 +307,23 @@ def controlled_greedy_generate(
                 vstat["n_noflip"] += 1
             else:
                 vstat["n_flip"] += 1
-                tokens_try = torch.cat(
-                    [tokens, torch.tensor([[nid_sym]], device=device)], dim=1
-                )
-                with torch.no_grad():
-                    logits_try = model.run_with_hooks(tokens_try, fwd_hooks=hooks)
-                l_final_try = logits_try[0, -1:, :].float()
-                l_early_try = compute_early_exit_logits(
-                    captured["h_early"], ln_final, W_U, b_U
-                )
-                b_next = min_flip_beta(l_early_try, l_final_try)
-                if verify_decision(b_next, verify_theta):   # 稳固 ⇒ 保留翻转
+                if arm in VERIFY_RAND_ARMS:
+                    # 安慰剂：**不读** β*_min，只按子集匹配的保留概率随机决定（seeded ⇒ 可复现）
+                    keep = torch.rand((), generator=gen, device=delta.device).item() < keep_prob
+                    b_next = None
+                else:
+                    tokens_try = torch.cat(
+                        [tokens, torch.tensor([[nid_sym]], device=device)], dim=1
+                    )
+                    with torch.no_grad():
+                        logits_try = model.run_with_hooks(tokens_try, fwd_hooks=hooks)
+                    l_final_try = logits_try[0, -1:, :].float()
+                    l_early_try = compute_early_exit_logits(
+                        captured["h_early"], ln_final, W_U, b_U
+                    )
+                    b_next = min_flip_beta(l_early_try, l_final_try)
+                    keep = verify_decision(b_next, verify_theta)   # 稳固 ⇒ 保留翻转
+                if keep:
                     nid = nid_sym
                     norm_ratios.append(1.0)
                     if b_next is None:
@@ -289,11 +331,14 @@ def controlled_greedy_generate(
                     else:
                         vstat["n_kept"] += 1
                         vstat["kept_beta_sum"] += b_next
+                        vstat["n_kept_beta"] += 1
                 else:                                        # 脆弱 ⇒ 回退到基线 token
                     nid = nid_base
                     norm_ratios.append(0.0)
                     vstat["n_reverted"] += 1
-                    vstat["rev_beta_sum"] += b_next
+                    if b_next is not None:
+                        vstat["rev_beta_sum"] += b_next
+                        vstat["n_rev_beta"] += 1
         elif arm in GATED_ARMS:
             gated, diag = gate_open(
                 arm, top2_margin(l_final), min_flip_beta(l_early, l_final), beta, gate_tau
@@ -328,7 +373,7 @@ def controlled_greedy_generate(
             "n_gated": int(sum(gate_flags)),
             "gated_frac": (sum(gate_flags) / len(gate_flags)) if gate_flags else None,
         }
-    elif arm in VERIFY_ARMS:
+    elif arm in VERIFY_FAMILY:
         n_flip = vstat["n_flip"]
         n_kept = vstat["n_kept"] + vstat["n_kept_inf"]
         gate_stat = {
@@ -341,9 +386,12 @@ def controlled_greedy_generate(
             "n_reverted": vstat["n_reverted"],
             "flip_rate": (n_flip / len(norm_ratios)) if norm_ratios else None,
             "keep_rate_of_flips": (n_kept / n_flip) if n_flip else None,
-            "mean_kept_beta": (vstat["kept_beta_sum"] / vstat["n_kept"]) if vstat["n_kept"] else None,
-            "mean_reverted_beta": (vstat["rev_beta_sum"] / vstat["n_reverted"]) if vstat["n_reverted"] else None,
+            # 均值只对"算了 β*"的步求（安慰剂臂 b_next 恒为 None ⇒ 两项均为 None，不是 0）
+            "mean_kept_beta": (vstat["kept_beta_sum"] / vstat["n_kept_beta"]) if vstat["n_kept_beta"] else None,
+            "mean_reverted_beta": (vstat["rev_beta_sum"] / vstat["n_rev_beta"]) if vstat["n_rev_beta"] else None,
             "verify_theta": verify_theta,
+            "verify_rule": ("bernoulli_keep_prob" if arm in VERIFY_RAND_ARMS else "beta_star_min>=theta"),
+            "keep_prob": keep_prob if arm in VERIFY_RAND_ARMS else None,
         }
     return tokenizer.decode(gids).strip(), norm_ratios, gate_stat
 
@@ -481,7 +529,24 @@ def selftest():
     assert gate_open("gated_betastar", 0.1, None, 0.2, 0.2)[0] is False  # R 空 → 关门
     assert gate_open("gated_damp", 0.1, bs, 0.2, 0.2)[0] is True
     print("  [5/5] 门控判据（margin/β*_min/gate_open 三臂）✓")
-    print("SELFTEST PASS: 5/5")
+
+    # 7) 安慰剂臂（verified_rand）footprint 标定解析 + 抽签可复现
+    mp = parse_keep_prob("know_wrong=0.6053,know_correct=0.6991,dont_know=0.6506")
+    assert abs(keep_prob_for(mp, "know_wrong") - 0.6053) < 1e-12
+    assert abs(keep_prob_for(mp, "dont_know") - 0.6506) < 1e-12
+    # 缺失子集 ⇒ _default＝已给各档均值（不是 0、不报错）
+    assert abs(keep_prob_for(mp, "未列子集") - (0.6053 + 0.6991 + 0.6506) / 3) < 1e-9
+    m1 = parse_keep_prob("0.8")
+    assert m1 == {"_default": 0.8} and keep_prob_for(m1, "know_wrong") == 0.8
+    # 默认标定串必须可解析且与 V1 实测一致
+    dflt = parse_keep_prob("know_wrong=0.6053,know_correct=0.6991,dont_know=0.6506")
+    assert set(dflt) == {"know_wrong", "know_correct", "dont_know", "_default"}
+    # 抽签可复现：同 (sample_id, step) → 同决策（臂内 gen.manual_seed(1234+7919*sid+31*step+arm_offset)）
+    g1 = torch.Generator().manual_seed(1234 + 7919 * 3 + 31 * 5)
+    g2 = torch.Generator().manual_seed(1234 + 7919 * 3 + 31 * 5)
+    assert torch.rand((), generator=g1).item() == torch.rand((), generator=g2).item()
+    print("  [7/7] 安慰剂臂 footprint 标定解析（逐子集/标量/缺省）+ 抽签可复现 ✓")
+    print("SELFTEST PASS: 7/7")
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -502,6 +567,12 @@ def main():
     ap.add_argument("--rank_threshold", type=int, default=50)
     ap.add_argument("--verify_theta", type=float, default=0.5,
                     help="verified_sym 的一步前瞻阈值（预注册 0.5）：t+1 步 β*_min ≥ θ 保留翻转")
+    ap.add_argument("--verify_keep_prob", type=str,
+                    default="know_wrong=0.6053,know_correct=0.6991,dont_know=0.6506",
+                    help="verified_rand 的保留概率（footprint 匹配参数，非超参）：单标量，或 "
+                         "'know_wrong=..,know_correct=..,dont_know=..' 逐子集标定。默认值＝"
+                         "V1（1.7B seed123 β=0.20 θ=0.5）实测 keep_rate_of_flips；"
+                         "⚠️ 换模型/换 β/换 θ 必须用同批实测重新标定（只看决策计数，不看结果）")
     ap.add_argument("--gate_tau", type=float, default=0.2,
                     help="G1/G3 门控阈值：末层前二 margin < τ 才施加（预注册：0.2 或 0.3）")
     ap.add_argument("--max_new", type=int, default=20)
@@ -521,6 +592,9 @@ def main():
     unknown = [a for a in args.arms if a not in ARM_DOC]
     if unknown:
         sys.exit(f"未知 arm: {unknown}（可选 {list(ARM_DOC)}）")
+    keep_prob_map = parse_keep_prob(args.verify_keep_prob)
+    if any(a in VERIFY_RAND_ARMS for a in args.arms):
+        print(f"  [verified_rand] footprint 匹配保留概率：{keep_prob_map}")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     out_dir = Path(args.output_dir) if args.output_dir else (
@@ -577,6 +651,7 @@ def main():
                     ln_final, beta, arm, ctrl_layer=ctrl_layer, max_new=args.max_new,
                     sample_id=e["sample_id"], gate_tau=args.gate_tau,
                     verify_theta=args.verify_theta,
+                    keep_prob=keep_prob_for(keep_prob_map, e["subset"]),
                 )
                 # 范数自检（F3）：非门控臂须 ≈1；门控臂只校验"开门"步（关门步比值为 0）；
                 # gated_damp 只取压支 ⇒ 范数天然 <1，跳过该检查（幅度由 δ⁻ 决定，非重标定问题）

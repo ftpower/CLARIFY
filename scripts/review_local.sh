@@ -30,6 +30,8 @@
 #   bash scripts/review_local.sh gated-tldc-8b     # T3 门控 8B（服务器用；SEED/TAU 可覆盖）
 #   bash scripts/review_local.sh verified-tldc     # 验证器臂（一步前瞻，θ=0.5 预注册）
 #   bash scripts/review_local.sh verified-tldc-8b  # 验证器臂 8B（服务器用；SEED/THETA 可覆盖）
+#   bash scripts/review_local.sh verified-rand     # 验证器 footprint 安慰剂（同批 real+sym+rand，KEEP_P 可覆盖）
+#   bash scripts/review_local.sh verified-rand-8b  # 同上 8B（服务器用；**必须**显式传 KEEP_P=同批标定）
 #
 # 说明：每条命令写成单行（`\` 续行在部分终端粘贴时会因行尾空格失效）。
 # 服务器命令请自行补 `unset HF_ENDPOINT && HF_HOME=...` 前缀（见 runbook §2）。
@@ -140,6 +142,17 @@ case "${1:-}" in
   verified-tldc-8b)
     # 验证器臂 8B（服务器用）；SEED / THETA 可覆盖
     env -u HF_ENDPOINT HF_HOME="${HF_HOME_SERVER:-/root/autodl-tmp/huggingface_cache}" python -u experiments/lin_theory/main_tldc_controls.py --model "$MODEL_8B" --layer_early 28 --ctrl_layer 31 --n_test 300 --seed_test "${SEED:-123}" --arms real verified_sym --betas 0.2 --verify_theta "${THETA:-0.5}" --output_dir experiments/outputs/tldc_verified_8b
+    ;;
+  verified-rand)
+    # V1 footprint 安慰剂（2026-09-23）：同批 real + verified_sym + verified_rand 三臂。
+    # KEEP_P 逐子集保留概率＝**V1 实测 keep_rate_of_flips**（KW 60.53% / KC 69.91% / DK 65.06%），
+    # 只按决策计数标定、不看结果 ⇒ 安慰剂与真验证器的期望扰动步数相同。
+    python experiments/lin_theory/main_tldc_controls.py --model "$MODEL_1P7B" --layer_early 20 --n_test 300 --seed_test "${SEED:-123}" --arms real verified_sym verified_rand --betas 0.2 --verify_theta "${THETA:-0.5}" --verify_keep_prob "${KEEP_P:-know_wrong=0.6053,know_correct=0.6991,dont_know=0.6506}" --output_dir experiments/outputs/tldc_verified_placebo
+    ;;
+  verified-rand-8b)
+    # 验证器臂 8B 的 footprint 安慰剂（服务器用）。⚠️ KEEP_P **必须**用同批 verified-tldc-8b 实测标定，
+    # 不得沿用 1.7B 的数（故这里强制显式传入：KEEP_P='know_wrong=..,know_correct=..,dont_know=..'）。
+    env -u HF_ENDPOINT HF_HOME="${HF_HOME_SERVER:-/root/autodl-tmp/huggingface_cache}" python -u experiments/lin_theory/main_tldc_controls.py --model "$MODEL_8B" --layer_early 28 --ctrl_layer 31 --n_test 300 --seed_test "${SEED:-123}" --arms real verified_sym verified_rand --betas 0.2 --verify_theta "${THETA:-0.5}" --verify_keep_prob "${KEEP_P:?必须先由 verified-tldc-8b 实测标定，如 KEEP_P='know_wrong=0.19,know_correct=0.04,dont_know=0.12'}" --output_dir experiments/outputs/tldc_verified_8b_placebo
     ;;
   gated-tldc-8b)
     # T3 门控族 8B（服务器用；H1′ 成立后"门控作为改进主张"的规模复验，ℓ*=28 与 8B TLDC 同协议）
