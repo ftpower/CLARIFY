@@ -1,0 +1,38 @@
+{
+ "inputs": [
+  "tldc_controls_123_real-verified_sym.json"
+ ],
+ "arms": [
+  "real",
+  "verified_sym"
+ ],
+ "beta_main": 0.2,
+ "betas": [
+  0.2
+ ],
+ "verdicts": [
+  {
+   "arm": "verified_sym",
+   "beta": 0.2,
+   "n_kw": 71,
+   "n_kc": 76,
+   "n_all": 300,
+   "lost_rescues": 0,
+   "extra_rescues": 2,
+   "avoided_breaks": 9,
+   "new_breaks": 1,
+   "net_delta_events_kwkc": 10,
+   "gain_all": 14,
+   "loss_all": 5,
+   "net_delta_events_all": 9,
+   "p_break_one_sided": 0.0107421875,
+   "p_rescue_one_sided": 1.0,
+   "p_all_two_sided": 0.063568115234375,
+   "swap_ratio": null,
+   "net_real": -6,
+   "net_verified": 3,
+   "dnet_events": 9,
+   "dnet_pp": 3.0
+  }
+ ]
+}
