@@ -122,6 +122,21 @@ VERIFY_RAND_ARMS = ("verified_rand",)    # 安慰剂（同机器、随机决策�
 VERIFY_FAMILY = VERIFY_ARMS + VERIFY_RAND_ARMS
 
 
+def loop_branch(arm):
+    """生成循环的分支归属（**单一来源**）："verify" / "gated" / "control"。
+
+    存在的理由（2026-09-23 实跑事故回归）：循环里的分支条件与 `d_ctrl` 守卫若各写一份判断，
+    两者可能不一致——原 bug 即分支写 `VERIFY_FAMILY`、守卫写 `VERIFY_ARMS`（只含 verified_sym）
+    ⇒ `verified_rand` 进分支后仍被要求算 `d_ctrl`（验证器族从不赋值）→ UnboundLocalError，
+    整轮三臂 ~28 分钟 GPU 白跑。现在分支与守卫都取本函数的返回值，并由 selftest 第 8 项锁死映射。
+    """
+    if arm in VERIFY_FAMILY:
+        return "verify"
+    if arm in GATED_ARMS:
+        return "gated"
+    return "control"
+
+
 def parse_keep_prob(spec):
     """解析 `--verify_keep_prob`：单标量 → 全体同一 p；`sub=p,sub=p` → 逐子集 p（缺失回退 _default）。
 
@@ -275,7 +290,8 @@ def controlled_greedy_generate(
     gate_flags = []
     gate_diags = []
     vstat = None
-    if arm in VERIFY_FAMILY:
+    branch = loop_branch(arm)          # "verify" / "gated" / "control"（单一来源，见 loop_branch）
+    if branch == "verify":
         vstat = {"n_noflip": 0, "n_flip": 0, "n_kept": 0, "n_kept_inf": 0,
                  "n_reverted": 0, "kept_beta_sum": 0.0, "rev_beta_sum": 0.0,
                  "n_kept_beta": 0, "n_rev_beta": 0}
@@ -297,7 +313,7 @@ def controlled_greedy_generate(
         gen = torch.Generator(device=delta.device)
         gen.manual_seed(1234 + 7919 * sample_id + 31 * step + arm_offset)
 
-        if arm in VERIFY_FAMILY:
+        if branch == "verify":
             # 一步前瞻验证：先算对称 TLDC 会翻成什么；只在与基线不同时才付出前瞻代价
             nid_base = int(l_final.argmax(dim=-1).item())
             nid_sym = int((l_final + beta * delta).argmax(dim=-1).item())
@@ -339,7 +355,7 @@ def controlled_greedy_generate(
                     if b_next is not None:
                         vstat["rev_beta_sum"] += b_next
                         vstat["n_rev_beta"] += 1
-        elif arm in GATED_ARMS:
+        elif branch == "gated":
             gated, diag = gate_open(
                 arm, top2_margin(l_final), min_flip_beta(l_early, l_final), beta, gate_tau
             )
@@ -358,7 +374,7 @@ def controlled_greedy_generate(
             d_ctrl = make_control_delta(delta, arm, gen, ctrl_delta)
             norm_ratios.append(float((d_ctrl.norm() / delta.norm().clamp_min(1e-12)).item()))
 
-        if arm not in VERIFY_ARMS:
+        if branch != "verify":
             logits_adj = l_final + beta * d_ctrl
             nid = int(logits_adj.argmax(dim=-1).item())
         gids.append(nid)
@@ -546,7 +562,21 @@ def selftest():
     g2 = torch.Generator().manual_seed(1234 + 7919 * 3 + 31 * 5)
     assert torch.rand((), generator=g1).item() == torch.rand((), generator=g2).item()
     print("  [7/7] 安慰剂臂 footprint 标定解析（逐子集/标量/缺省）+ 抽签可复现 ✓")
-    print("SELFTEST PASS: 7/7")
+
+    # 8) 分支归属一致性（2026-09-23 实跑 bug 回归）：循环分支与 d_ctrl 守卫必须同源。
+    #    原 bug＝分支写 VERIFY_FAMILY、守卫写 VERIFY_ARMS ⇒ verified_rand 走分支后仍被要求算 d_ctrl。
+    assert loop_branch("verified_sym") == "verify"
+    assert loop_branch("verified_rand") == "verify", "安慰剂臂属验证器族（不赋值 d_ctrl）"
+    assert "verified_rand" not in VERIFY_ARMS and "verified_rand" in VERIFY_FAMILY
+    for a in GATED_ARMS:
+        assert loop_branch(a) == "gated", a
+    for a in ARM_DOC:
+        assert loop_branch(a) in ("verify", "gated", "control"), a
+        if a.startswith("verified"):        # 命名属验证器族 ⇒ 必须已登记进 VERIFY_FAMILY
+            assert loop_branch(a) == "verify", f"{a} 未登记进 VERIFY_FAMILY（会落到 d_ctrl 分支）"
+    assert set(VERIFY_FAMILY).isdisjoint(GATED_ARMS)
+    print("  [8/8] 分支归属一致（d_ctrl 守卫同源；verified_rand ∈ verify 族）✓")
+    print("SELFTEST PASS: 8/8")
 
 
 # ═════════════════════════════════════════════════════════════════════════════

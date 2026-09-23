@@ -31,6 +31,7 @@
 #   bash scripts/review_local.sh verified-tldc     # 验证器臂（一步前瞻，θ=0.5 预注册）
 #   bash scripts/review_local.sh verified-tldc-8b  # 验证器臂 8B（服务器用；SEED/THETA 可覆盖）
 #   bash scripts/review_local.sh verified-rand     # 验证器 footprint 安慰剂（同批 real+sym+rand，KEEP_P 可覆盖）
+#   bash scripts/review_local.sh verified-rand-smoke # 同上小样本冒烟（n=30，先跑这个验证链路）
 #   bash scripts/review_local.sh verified-rand-8b  # 同上 8B（服务器用；**必须**显式传 KEEP_P=同批标定）
 #
 # 说明：每条命令写成单行（`\` 续行在部分终端粘贴时会因行尾空格失效）。
@@ -142,6 +143,12 @@ case "${1:-}" in
   verified-tldc-8b)
     # 验证器臂 8B（服务器用）；SEED / THETA 可覆盖
     env -u HF_ENDPOINT HF_HOME="${HF_HOME_SERVER:-/root/autodl-tmp/huggingface_cache}" python -u experiments/lin_theory/main_tldc_controls.py --model "$MODEL_8B" --layer_early 28 --ctrl_layer 31 --n_test 300 --seed_test "${SEED:-123}" --arms real verified_sym --betas 0.2 --verify_theta "${THETA:-0.5}" --output_dir experiments/outputs/tldc_verified_8b
+    ;;
+  verified-rand-smoke)
+    # 修复验证冒烟（2026-09-23）：verified_rand 首次上真机即 UnboundLocalError（分支条件与 d_ctrl
+    # 守卫不一致，见 main_tldc_controls.loop_branch 注释）⇒ 先小样本真跑一次确认链路再上正式档。
+    # n=30、GPU 数分钟；classify 缓存按 n 命名，与 n=300 正式档互不干扰。
+    python experiments/lin_theory/main_tldc_controls.py --model "$MODEL_1P7B" --layer_early 20 --n_test 30 --seed_test 123 --arms real verified_sym verified_rand --betas 0.2 --verify_theta "${THETA:-0.5}" --output_dir experiments/outputs/_smoke_tldc_rand
     ;;
   verified-rand)
     # V1 footprint 安慰剂（2026-09-23）：同批 real + verified_sym + verified_rand 三臂。
