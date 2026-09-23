@@ -58,18 +58,24 @@ KW, KC, DK = "know_wrong", "know_correct", "dont_know"
 
 
 def placebo_verdict(r, dnet_events):
-    """真验证器 vs 安慰剂（footprint 匹配）的判定文字（**先注册规则，后看结果**）。
+    """真验证器 vs 安慰剂（footprint 匹配）的判定（**先注册规则，后看结果**）。
 
-    规则（判据只此一条，按顺序生效）：
-      ① dnet_events > 0 且交换比 > 1（避免破坏 : 丢失救回，以安慰剂为基准）⇒ 增益不可由 footprint 解释；
-      ② dnet_events > 0 但交换比 ≤ 1 ⇒ 净事件提升但选择性不占优 ⇒ 只报数、不下机制结论；
-      ③ dnet_events ≤ 0 ⇒ 增益可由 footprint 解释 ⇒ **1.7B 上验证器路线不成立**（判停依 V2/8B）。
+    规则（三分支，按数学口径写，**不做除法**）：
+      ① dnet_events > 0 且 **避免破坏 > 丢失救回** ⇒ 增益不可由 footprint 解释（择优保留）；
+      ② dnet_events > 0 但避免破坏 ≤ 丢失救回 ⇒ 净事件更高而选择性不占优 ⇒ 只报数、不下机制结论；
+      ③ dnet_events ≤ 0 ⇒ 增益可由 footprint 解释 ⇒ 1.7B 上验证器路线不成立（判停依 V2/8B）。
+
+    ⚠️ **口径消歧记录（2026-09-23；V1b 数据落盘后、用户拍板"按符合数学规则与逻辑的方式判"）**：
+    原文本写「交换比 > 1」却又在分支② 括注「含分母 0」——而"分母 0"在**零丢失救回**形态
+    （避免破坏>0、丢失救回=0，比值数学上为 +∞）下与"交换比 > 1"自相矛盾。改用等价的
+    `avoided_breaks > lost_rescues`：零分母自然判为①，退化形态（两侧均 0）自然落入②。
+    本修正**只消除规则文本的自相矛盾**，未改动数据、阈值方向或任何计数口径。
     """
-    ratio = r["swap_ratio"]
-    if dnet_events > 0 and ratio is not None and ratio > 1:
-        return "**不可由 footprint 解释**（净事件更高 ∧ 交换比 >1）⇒ β*_min 选择信息有效"
+    av, ls = r["avoided_breaks"], r["lost_rescues"]
+    if dnet_events > 0 and av > ls:
+        return "**不可由 footprint 解释**（净事件更高 ∧ 避免破坏 > 丢失救回）⇒ β*_min 选择信息有效"
     if dnet_events > 0:
-        return ("净事件更高但**选择性不占优**（交换比 ≤1 或分母 0）⇒ 只报数、不下机制结论"
+        return ("净事件更高但**选择性不占优**（避免破坏 ≤ 丢失救回）⇒ 只报数、不下机制结论"
                 "（事件数小，§9d 教训）")
     return "**可由 footprint 解释**（净事件未高于安慰剂）⇒ 1.7B 上验证器路线不成立"
 
@@ -197,13 +203,16 @@ def selftest():
     assert swap_verdict({"avoided_breaks": 9, "lost_rescues": 0}).startswith("**有利"), "零丢失应判最优"
     assert swap_verdict({"avoided_breaks": 0, "lost_rescues": 3}).startswith("不利")
     assert swap_verdict({"avoided_breaks": 0, "lost_rescues": 0}).startswith("无差异")
-    # 安慰剂判定（规则先注册）：三条分支各自可达，且不得把"净提升但选择性不占优"判成有效
-    assert "不可由 footprint 解释" in placebo_verdict({"swap_ratio": 2.0}, 3)
-    assert "选择性不占优" in placebo_verdict({"swap_ratio": 0.5}, 3)
-    assert "选择性不占优" in placebo_verdict({"swap_ratio": None}, 3)
-    assert "可由 footprint 解释" in placebo_verdict({"swap_ratio": 2.0}, 0)
-    assert "可由 footprint 解释" in placebo_verdict({"swap_ratio": 1.5}, -2)
-    print("[selftest] analyze_verified_arms 11/11 PASS")
+    # 安慰剂判定（预注册三分支）：零分母按**数学口径** ⇒ 择优保留（2026-09-23 口径消歧）
+    assert "不可由 footprint 解释" in placebo_verdict({"avoided_breaks": 2, "lost_rescues": 1}, 3)
+    assert "不可由 footprint 解释" in placebo_verdict({"avoided_breaks": 7, "lost_rescues": 0}, 8), \
+        "零丢失救回（比值 +∞）⇒ 择优保留（原版误判为'不占优'）"
+    assert "选择性不占优" in placebo_verdict({"avoided_breaks": 1, "lost_rescues": 2}, 3)
+    assert "选择性不占优" in placebo_verdict({"avoided_breaks": 0, "lost_rescues": 0}, 3), \
+        "退化形态（两侧均 0，无选择性事件）⇒ 只报数"
+    assert "可由 footprint 解释" in placebo_verdict({"avoided_breaks": 2, "lost_rescues": 0}, 0)
+    assert "可由 footprint 解释" in placebo_verdict({"avoided_breaks": 1, "lost_rescues": 1}, -2)
+    print("[selftest] analyze_verified_arms 12/12 PASS")
 
 
 def main():
@@ -389,7 +398,7 @@ def main():
                    f"KW 救回侧单侧 p = {r['p_rescue_one_sided']:.4f}；"
                    f"全样本双侧 McNemar p = **{r['p_all_two_sided']:.4f}**"
                    f"（仅真验证器正确 {r['gain_all']} vs 仅安慰剂正确 {r['loss_all']}）",
-                   f"- **判定（规则先注册）**：Δnet = {dnet:+d} 事件 ⇒ {placebo_verdict(r, dnet)}",
+                   f"- **判定（预注册三分支；零分母按数学口径消歧，2026-09-23）**：Δnet = {dnet:+d} 事件 ⇒ {placebo_verdict(r, dnet)}",
                    ""]
             placebo_verdicts.append({"arm": arm, "placebo_arm": pa, "beta": beta_main, **r,
                                      "net_placebo": t_p["net_events"],

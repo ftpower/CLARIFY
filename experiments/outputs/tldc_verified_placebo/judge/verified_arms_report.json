@@ -84,7 +84,7 @@
    "net_placebo": -5,
    "net_verified": 3,
    "dnet_events": 8,
-   "verdict": "净事件更高但**选择性不占优**（交换比 ≤1 或分母 0）⇒ 只报数、不下机制结论（事件数小，§9d 教训）"
+   "verdict": "**不可由 footprint 解释**（净事件更高 ∧ 避免破坏 > 丢失救回）⇒ β*_min 选择信息有效"
   }
  ]
 }
