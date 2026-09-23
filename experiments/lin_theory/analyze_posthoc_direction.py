@@ -11,7 +11,15 @@
   · t   步的特征（与 baseline 同值）= 干预前特征，不得标为"事后"。
 
 用法：
+  # 1.7B（默认档）
   python experiments/lin_theory/analyze_posthoc_direction.py --seeds 123 456
+  # 8B（V2 判停档；基线与 sym 分目录落盘 ⇒ 两个目录都要传）
+  python experiments/lin_theory/analyze_posthoc_direction.py --seeds 123 456 \
+      --arch experiments/outputs/geometry_archive_8b_sym \
+      --arch_baseline experiments/outputs/geometry_archive_8b \
+      --out experiments/outputs/posthoc_direction_8b
+
+⚠️ 缺档时**直接报错退出**（不产出空报告）：V2 是判停档，静默跳过会造成"误判为已跑"。
 """
 
 import argparse
@@ -23,14 +31,29 @@ from collections import Counter
 from pathlib import Path
 
 ARCH = "experiments/outputs/geometry_archive"
+ARCH_SYM_8B = "experiments/outputs/geometry_archive_8b_sym"
+ARCH_BASE_8B = "experiments/outputs/geometry_archive_8b"
 
 
-def load(seed, op):
-    f = f"geo_{op}_seed{seed}.json" if op == "baseline" else f"geo_{op}_b020_seed{seed}.json"
-    p = Path(ARCH) / f
-    if not p.exists():
-        return None
-    return {s["sample_id"]: s for s in json.loads(p.read_text())["samples"]}
+def load(seed, op, arch=None):
+    """读一档档案：`--arch` 指定目录，sym 档允许 β 非 0.20（唯一匹配时自动采纳）。
+
+    返回 (samples_by_id, 实际文件名)；缺档返回 (None, None)。
+    """
+    d = Path(arch or ARCH)
+    if op == "baseline":
+        p = d / f"geo_baseline_seed{seed}.json"
+        return ({s["sample_id"]: s for s in json.loads(p.read_text())["samples"]}, p.name) \
+            if p.exists() else (None, None)
+    exact = d / f"geo_{op}_b020_seed{seed}.json"
+    if exact.exists():
+        return {s["sample_id"]: s for s in json.loads(exact.read_text())["samples"]}, exact.name
+    # 兜底：SYM_BETA ≠ 0.20 时文件名不同（唯一匹配才采纳，多匹配视为歧义）
+    cands = sorted(d.glob(f"geo_{op}_b*_seed{seed}.json"))
+    if len(cands) == 1:
+        p = cands[0]
+        return {s["sample_id"]: s for s in json.loads(p.read_text())["samples"]}, p.name
+    return None, None
 
 
 def diverge_step(base, sym):
@@ -49,13 +72,18 @@ def margin(step):
     return f[0][2] - f[1][2]
 
 
-def collect(seeds):
+def collect(seeds, arch=None, arch_baseline=None):
     rows = []
+    missing = []
+    files = set()
     for seed in seeds:
-        B, S = load(seed, "baseline"), load(seed, "sym")
+        B, fB = load(seed, "baseline", arch_baseline or arch)
+        S, fS = load(seed, "sym", arch)
         if B is None or S is None:
-            print(f"  [skip] seed{seed} 缺档案")
+            missing.append(f"seed{seed}: baseline={fB or '缺'} sym={fS or '缺'}")
+            print(f"  [skip] seed{seed} 缺档案（baseline={fB or '缺'}，sym={fS or '缺'}）")
             continue
+        files.update({fB, fS})
         for sid, s in S.items():
             b = B.get(sid)
             if b is None:
@@ -80,7 +108,7 @@ def collect(seeds):
                     r["pre_beta"] = nxt_b["geo"]["beta_star_min"]
                     r["pre_margin"] = margin(nxt_b)
             rows.append(r)
-    return rows
+    return rows, {"missing": missing, "files": sorted(files)}
 
 
 def auroc(pos, neg):
@@ -112,13 +140,26 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seeds", nargs="+", default=["123", "456"])
     ap.add_argument("--out", default="experiments/outputs/posthoc_direction_1p7b")
+    ap.add_argument("--arch", default=ARCH,
+                    help=f"干预后（sym）档案目录（默认 {ARCH}；8B＝{ARCH_SYM_8B}）")
+    ap.add_argument("--arch_baseline", default=None,
+                    help=f"基线档案目录（默认＝--arch；8B 分目录落盘须传 {ARCH_BASE_8B}）")
     args = ap.parse_args()
 
-    rows = collect(args.seeds)
+    rows, info = collect(args.seeds, arch=args.arch, arch_baseline=args.arch_baseline)
+    if not rows:
+        raise SystemExit(
+            "无任何样本可判读——**判停档不得静默跳过**。\n"
+            f"  --arch={args.arch}\n  --arch_baseline={args.arch_baseline or args.arch}\n"
+            f"  缺档明细：{info['missing'] or '（目录存在但样本 id 无交集？）'}\n"
+            "  先跑命令生成档案，或修正 --arch/--arch_baseline。")
+    if info["missing"]:
+        print(f"  ⚠️ 部分 seed 缺档：{info['missing']}（报告只含已加载的 seed）")
     resc = [r for r in rows if r["label"] == "rescue"]
     brk = [r for r in rows if r["label"] == "break"]
     md = ["# §5.8 事后信号方向可分性（干预后档案 × 干预前档案，零 GPU）", "",
-          f"- 档：`geo_sym_b020_seed{','.join(args.seeds)}.json` × `geo_baseline_seed{','.join(args.seeds)}.json`",
+          f"- 档案：`{args.arch}`" + ("" if not args.arch_baseline else f" × `{args.arch_baseline}`"),
+          f"- 文件：{', '.join(info['files'])}",
           f"- 样本 {len(rows)}｜救回 {len(resc)}｜破坏 {len(brk)}",
           "- 判据：AUROC(救回 vs 破坏 | 事后特征) ≥ 0.70，CP95 下界 >0.5，双 seed 同向", ""]
 
