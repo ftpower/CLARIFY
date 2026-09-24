@@ -315,6 +315,7 @@ def build_arm_scores(
     post_softmax=False,
     relative_top=0.0,
     relative_top_value=-1000.0,
+    ps_variants=None,
 ):
     """纯算子：给定成熟层 logits 与"深度→早层 logits"的投影函数，计算各实验条件的续写对数似然。
 
@@ -324,6 +325,8 @@ def build_arm_scores(
         cont_ids: [n_pos] 续写 token id（位置 p 的 logits 预测 cont_ids[p]）
         arms: [(name, spec)]；spec = ("baseline",) | ("static", depth) | ("dynamic", (depths...))
                其中 depth 取值为早层**深度**（偶数层含 0，A5）
+        ps_variants: 额外计算的 post_softmax 取值（诊断用；键名为 `<name>__ps{0,1}`）。
+               投影与 JSD 只算一次（JSD 与 post_softmax 无关），故诊断条件几乎不增加开销。
 
     Returns:
         {name: {"score": float, "selected_layers": [depth,...], "jsd": {depth: [float,...]}}}
@@ -331,8 +334,14 @@ def build_arm_scores(
     n_pos = int(cont_ids.shape[0])
     idx = torch.arange(n_pos, device=cont_ids.device)
     out = {}
+    variants = [bool(post_softmax)] + [bool(v) for v in (ps_variants or []) if bool(v) != bool(post_softmax)]
+    def _key(name, ps):
+        if bool(ps) == bool(post_softmax):
+            return name
+        return f"{name}__ps{int(bool(ps))}"
     if n_pos == 0:
-        return {name: {"score": None, "selected_layers": [], "jsd": {}} for name, _ in arms}
+        return {_key(name, ps): {"score": None, "selected_layers": [], "jsd": {}}
+                for name, _ in arms for ps in variants}
 
     mature_logsm = F.log_softmax(mature_logits.float(), dim=-1)
     jsd_table = {}
@@ -340,8 +349,9 @@ def build_arm_scores(
     # 第一遍：逐候选层算 JSD（dynamic 选层用）+ 同时在同一投影结果上计算 static 条件
     for name, spec in arms:
         if spec[0] == "baseline":
-            out[name] = {"score": float(mature_logsm[idx, cont_ids].sum().item()),
-                         "selected_layers": [], "jsd": {}}
+            for ps in variants:
+                out[_key(name, ps)] = {"score": float(mature_logsm[idx, cont_ids].sum().item()),
+                                       "selected_layers": [], "jsd": {}}
 
     need_jsd = any(spec[0] == "dynamic" for _, spec in arms)
     jsd_depths = sorted({d for _, spec in arms if spec[0] == "dynamic" for d in spec[1]}) if need_jsd else []
@@ -353,9 +363,10 @@ def build_arm_scores(
             jsd_table[d] = jsd_mean(mature_logits, pre)
         for name, spec in arms:
             if spec[0] == "static" and spec[1] == d:
-                diff = _diff_logits(mature_logits, pre, post_softmax, relative_top, relative_top_value)
-                out[name] = {"score": float(diff[idx, cont_ids].sum().item()),
-                             "selected_layers": [int(d)], "jsd": {}}
+                for ps in variants:
+                    diff = _diff_logits(mature_logits, pre, ps, relative_top, relative_top_value)
+                    out[_key(name, ps)] = {"score": float(diff[idx, cont_ids].sum().item()),
+                                           "selected_layers": [int(d)], "jsd": {}}
 
     # 第二遍：dynamic 条件——逐位置在桶内 argmax JSD，再用被选层的 log 差
     for name, spec in arms:
@@ -365,19 +376,20 @@ def build_arm_scores(
         stack = torch.stack([jsd_table[d] for d in bucket], dim=0)  # [n_bucket, n_pos]
         sel_pos = stack.argmax(dim=0)  # [n_pos]
         selected_layers = [int(bucket[int(s)]) for s in sel_pos]
-        diff_rows = None
-        for j, d in enumerate(bucket):
-            pos_mask = sel_pos == j
-            if not bool(pos_mask.any()):
-                continue
-            pre = project_fn(d)
-            diff = _diff_logits(mature_logits, pre, post_softmax, relative_top, relative_top_value)
-            if diff_rows is None:
-                diff_rows = torch.empty_like(diff)
-            diff_rows[pos_mask] = diff[pos_mask]
-        score = float(diff_rows[idx, cont_ids].sum().item())
-        out[name] = {"score": score, "selected_layers": selected_layers,
-                     "jsd": {int(d): [float(x) for x in jsd_table[d]] for d in bucket}}
+        for ps in variants:
+            diff_rows = None
+            for j, d in enumerate(bucket):
+                pos_mask = sel_pos == j
+                if not bool(pos_mask.any()):
+                    continue
+                pre = project_fn(d)
+                diff = _diff_logits(mature_logits, pre, ps, relative_top, relative_top_value)
+                if diff_rows is None:
+                    diff_rows = torch.empty_like(diff)
+                diff_rows[pos_mask] = diff[pos_mask]
+            score = float(diff_rows[idx, cont_ids].sum().item())
+            out[_key(name, ps)] = {"score": score, "selected_layers": selected_layers,
+                                   "jsd": {int(d): [float(x) for x in jsd_table[d]] for d in bucket}}
     return out
 
 
@@ -468,7 +480,8 @@ def encode_pair(model, prompt, cont_text, max_ctx=0):
 
 @torch.no_grad()
 def score_choice(model, prompt, cont_text, arms, depths, post_softmax=False,
-                 relative_top=0.0, relative_top_value=-1000.0, max_ctx=0, lens_check=True):
+                 relative_top=0.0, relative_top_value=-1000.0, max_ctx=0, lens_check=True,
+                 ps_variants=None):
     """一次前向 → 全部实验条件的续写对数似然。
 
     前向只做一次：hook 出候选早层在**续写位置**的残差（[n_pos, d_model]，极小），
@@ -506,7 +519,7 @@ def score_choice(model, prompt, cont_text, arms, depths, post_softmax=False,
 
     res = build_arm_scores(mature, project_fn, cont_ids, arms,
                            post_softmax=post_softmax, relative_top=relative_top,
-                           relative_top_value=relative_top_value)
+                           relative_top_value=relative_top_value, ps_variants=ps_variants)
     res["_n_pos"] = n_pos
 
     if lens_check and "mature_lens_h" in store:
@@ -599,6 +612,13 @@ def run(args):
         elif spec[0] == "dynamic":
             depths_set.update(int(d) for d in spec[1])
     depths = sorted(depths_set)
+    # 事后追加的稳健性诊断：同一次前向里另算一组 post_softmax 取反的条件（键名加 __ps{0,1} 后缀）。
+    # 起因：官方 MC 口径（post_softmax=False）下对比分数不归一，早期层分布弥散时 MC2 会饱和；
+    # 官方论文 Table 6 亦做过该对照（7B：无 post-softmax 63.8 vs 有 52.2）。**主判据条件不受影响**。
+    ps_variants = [not args.post_softmax] if args.post_softmax_diag else []
+    if ps_variants:
+        arms = arms + [(f"{n}__ps{int(ps_variants[0])}", spec) for n, spec in arms]
+        print(f"  [诊断] 追加 post_softmax={ps_variants[0]} 的条件组（{len(arms)} 个条件，投影/JSD 复用，主判据不变）")
     print(f"  buckets={buckets}")
     print(f"  candidates={candidates_in_bucket(0, n_layers, n_layers)}")
     print(f"  arms={[a for a, _ in arms]}")
@@ -628,7 +648,8 @@ def run(args):
                                       post_softmax=args.post_softmax,
                                       relative_top=args.relative_top,
                                       relative_top_value=args.relative_top_value,
-                                      max_ctx=args.max_ctx)
+                                      max_ctx=args.max_ctx,
+                                      ps_variants=ps_variants)
             lens_k += cache[ans]["_lens"][0]
             lens_n += cache[ans]["_lens"][1]
             n_choices += 1
@@ -728,7 +749,7 @@ def build_question_record(qi, q, cache, arms, save_arms=()):
         rec["mc"][name] = {k: mc[k] for k in ("MC1", "MC2", "MC3")}
         if name in save_arms or name == "baseline":
             rec["scores"][name] = {"true": [float(x) for x in st], "false": [float(x) for x in sf]}
-        if name.startswith("dyn"):
+        if name.startswith("dyn") and "__ps" not in name:
             sel = []
             for a in ref_true + ref_false:
                 sel.extend(cache[a][name]["selected_layers"])
@@ -768,7 +789,7 @@ def aggregate(per_q, arms):
 def layer_dist(per_q, arms, n_layers):
     dist = {}
     for name, spec in arms:
-        if spec[0] != "dynamic":
+        if spec[0] != "dynamic" or "__ps" in name:
             continue
         cnt = {}
         for r in per_q:
@@ -952,7 +973,8 @@ def selftest_stub():
     prompt, cont = "abcdefgh", " ij"
     arms = [("baseline", ("baseline",)), ("s0", ("static", 0)), ("s2", ("static", 2)),
             ("zero", ("static", n_layers)), ("dyn", ("dynamic", (0, 2)))]
-    res = score_choice(m, prompt, cont, arms, [0, 2, n_layers], lens_check=False)
+    res = score_choice(m, prompt, cont, arms, [0, 2, n_layers], lens_check=False,
+                       ps_variants=[True])
 
     prefix_ids = m.to_tokens(prompt, prepend_bos=True)
     full_ids = m.to_tokens(prompt + cont, prepend_bos=True)
@@ -1004,7 +1026,11 @@ def selftest_stub():
         ser_ok = len(_txt) > 0 and out_stub["data"]["fold_ids"]["a"] == [0]
     except TypeError:
         ser_ok = False
+    ps_keys_ok = all(f"{n}__ps1" in res for n in ("s0", "s2", "dyn"))
+    ps_differs = any(abs(res[f"{n}__ps1"]["score"] - res[n]["score"]) > 1e-6 for n in ("s0", "s2", "dyn"))
     checks = [
+        ("post_softmax 诊断条件（键名齐备且数值与主条件不同）", ps_keys_ok and ps_differs,
+         sorted(k for k in res if k.endswith("__ps1")), ["dyn__ps1", "s0__ps1", "s2__ps1"]),
         ("产物可 JSON 序列化（fold_ids 为 set 时亦须通过）", ser_ok,
          out_stub["data"]["fold_ids"], {"a": [0], "b": [1]}),
         ("端到端逐题聚合（MC 三指标 + 选层记录）", agg_ok, list(rec["mc"]), ["baseline", "dyn"]),
@@ -1450,6 +1476,8 @@ def main():
     ap.add_argument("--buckets", type=str, default="auto", help='"auto" 或 "lo:hi,lo:hi"')
     ap.add_argument("--static_layers", type=str, default="even", help='"even" | "none" | "0,4,8"')
     ap.add_argument("--post_softmax", action="store_true", help="官方 MC 口径为 False（A1），默认不加")
+    ap.add_argument("--no_post_softmax_diag", dest="post_softmax_diag", action="store_false",
+                    help="关闭事后追加的 post_softmax 稳健性诊断条件（默认开启）")
     ap.add_argument("--relative_top", type=float, default=0.0,
                     help="官方 MC 命令行默认 0.0（APC 关闭，A2）；0.1 = 论文 α 取值（启用 APC）")
     ap.add_argument("--relative_top_value", type=float, default=-1000.0)
