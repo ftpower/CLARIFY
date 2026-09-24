@@ -573,6 +573,10 @@ def run(args):
         Path(__file__).resolve().parent.parent / "outputs" / "dola_mc_repro")
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    json_path, partial = resolve_output_paths(out_dir, args.model.split("/")[-1], args.tag,
+                                              resume=args.resume, overwrite=args.overwrite)
+    if not args.tag:
+        args.tag = args.tag or f"{args.fold}_n{args.n_questions or 817}"
     questions = load_questions(args.data, args.n_questions, args.seed_subset)
     stats = validate_questions(questions)
     fold_ids = split_folds(len(questions), args.seed_fold)
@@ -636,7 +640,6 @@ def run(args):
 
     # ── 断点续跑：每题增量写入 `.partial.jsonl`（被中断最多损失当前一题）──
     fp = run_fingerprint(args, arms, depths, buckets, ps_variants)
-    partial = out_dir / f"dola_mc_{args.model.split('/')[-1]}_{args.tag or f'{args.fold}_n{len(questions)}'}.partial.jsonl"
     done = {}
     if args.resume and partial.exists():
         _hdr, _recs = read_partial(partial, expect_fp=fp)
@@ -714,9 +717,7 @@ def run(args):
 
     out = assemble_output(args, per_q, arms, n_layers, buckets, fold_ids, lens_k, lens_n,
                           len_stats, n_choices, zero_contrast, stats, time.time() - t0)
-    tag = args.tag or f"{args.fold}_n{len(per_q)}"
-    model_tag = args.model.split("/")[-1]
-    path = out_dir / f"dola_mc_{model_tag}_{tag}.json"
+    path = json_path
     with open(path, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=1)
     print(f"\nSaved → {path}")
@@ -728,6 +729,22 @@ def run(args):
 
 
 # ── 断点续跑（每题增量写入；中断/崩溃最多损失当前一题）──────────────────────────
+
+
+def resolve_output_paths(out_dir, model_tag, tag, resume=False, overwrite=False):
+    """确定产物路径并做**覆盖保护**（fail-closed）：长跑代价高，禁止静默覆盖既有产物或断点文件。"""
+    json_path = Path(out_dir) / f"dola_mc_{model_tag}_{tag}.json"
+    partial_path = Path(out_dir) / f"dola_mc_{model_tag}_{tag}.partial.jsonl"
+    if json_path.exists() and not overwrite:
+        raise SystemExit(
+            f"目标产物已存在：{json_path.name}（禁止静默覆盖长跑结果）\n"
+            f"  ⇒ 另存请加 --tag 换名（例如 --tag {tag}b）；确要覆盖请加 --overwrite；"
+            f"已有产物可直接 --judge 判读")
+    if partial_path.exists() and not (resume or overwrite):
+        raise SystemExit(
+            f"已存在断点文件：{partial_path.name}\n"
+            f"  ⇒ 续跑请加 --resume（指纹一致即跳过已完成题）；确认丢弃重跑请加 --overwrite")
+    return json_path, partial_path
 
 
 def run_fingerprint(args, arms, depths, buckets, ps_variants):
@@ -1168,6 +1185,7 @@ def selftest_stub():
     # 断点续跑：写入 → 读回 → 指纹校验 → 定稿（覆盖"中断丢结果"的教训）
     import tempfile
     from pathlib import Path as _P
+    from pathlib import Path as pathlib_P
 
     with tempfile.TemporaryDirectory() as td:
         pf = _P(td) / "x.partial.jsonl"
@@ -1192,7 +1210,25 @@ def selftest_stub():
         except SystemExit:
             mismatch_blocked = True
 
+    with tempfile.TemporaryDirectory() as td2:
+        j2, p2 = resolve_output_paths(td2, "m", "t")
+        (pathlib_P(td2) / j2.name).write_text("{}")
+        try:
+            resolve_output_paths(td2, "m", "t"); guard_ok = False
+        except SystemExit:
+            guard_ok = True
+        _j3, p3 = resolve_output_paths(td2, "m", "t2")   # tag=t2 的断点文件
+        (pathlib_P(td2) / p3.name).write_text("{}")
+        try:
+            resolve_output_paths(td2, "m", "t2"); guard2_ok = False
+        except SystemExit:
+            guard2_ok = True
+        overwrite_ok = bool(resolve_output_paths(td2, "m", "t", overwrite=True))
+        resume_ok = bool(resolve_output_paths(td2, "m", "t2", resume=True))
+
     checks = [
+        ("覆盖保护（既有产物/断点默认拒绝，--overwrite/--resume 放行）",
+         guard_ok and guard2_ok and overwrite_ok and resume_ok, [guard_ok, guard2_ok], [True, True]),
         ("断点续跑（截断行容忍 + 私有字段分离 + 指纹不符拒绝）", rt_ok and mismatch_blocked,
          [len(clean_b), agg_b["lens_k"], mismatch_blocked], [1, 1, True]),
         ("诊断条件不得与主条件重复（键名冲突回归守卫）", ps_no_collide, "见上", "主/诊断分数应不同"),
@@ -1744,6 +1780,8 @@ def main():
     ap.add_argument("--parity_dtype", type=str, default="float32")
     ap.add_argument("--lens_min_agree", type=float, default=0.99)
     ap.add_argument("--resume", action="store_true", help="从同名 .partial.jsonl 续跑（指纹须一致）")
+    ap.add_argument("--overwrite", action="store_true",
+                    help="允许覆盖既有产物/断点文件（默认拒绝，防止长跑结果被静默覆盖）")
     ap.add_argument("--finalize", type=str, default=None,
                     help="把中断运行的 .partial.jsonl 定稿为标准产物（标注 partial，随后可 --judge）")
     ap.add_argument("--judge", type=str, default=None, help="对已有结果 JSON 做零 GPU 判读")
