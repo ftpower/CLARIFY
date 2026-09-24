@@ -178,60 +178,52 @@ def refs_of(q):
 
 
 def MC_calcs(scores_true, scores_false, ref_true, ref_best):
-    """官方 L171-213 逐字移植（float64 + 稳定性披露）。
+    """官方 L171-213 移植 + **数值稳健化**（差异只在官方会产出伪值的区间生效，2026-09-24）。
 
-    post_softmax=False 时 score 是**对数比之和**（可正可负、非对数概率），官方直接 `np.exp`。
-    本移植：
-      · 默认**完全照原样**算；
-      · 额外记录 `max_abs`，仅当 |score| > 500（有溢出风险）时整体平移 `−max(all)` 后再 exp
-        （MC1/MC3 只用序关系不受影响；MC2 是同一分母的比值，平移全部 true/false 后**数学上恒等**），
-        并置 `mc2_shifted=True` 以便审计 —— 不静默改口径。
+    官方原样行为：若某侧的 `exp(score)` 全部下溢为 0，则把**该侧**分数反复减半直到不下溢。
+    该减半发生在 MC2 计算处、且在 MC1/MC3 **之后**，故只影响 MC2；但两侧可能被减半**不同次数**
+    ⇒ 相当于给两侧乘了不同的人为尺度 ⇒ **MC2 被污染**（实测 `[-1500,-1510]` vs `[-800,-810]`：
+    官方 MC2 = **1.0**，而按定义应为 9.86e-305，偏差 300 个数量级；MC1/MC3 两者一致，均正确）。
+    本实现：
+      ① MC1/MC3 用**未改动**的原始分数——与官方逐位相同（官方亦用原始分数，不受减半影响）；
+      ② MC2 用**公共平移**（全体 true/false 分数同减其最大者）后计算——归一化质量比在公共平移下
+         **数学恒等**，既不下溢也不上溢，即官方"本意"的归一化质量；
+      ③ 记录官方守卫"本会"触发的情形（`underflow_guard_true/false`），供审计与并列披露。
+
+    对**主判据条件**无影响（可证明）：对比分数 `diff_t = logsm(成熟)_t − logsm(早层)_t ≥ logsm(成熟)_t`
+    （因 `logsm(早层) ≤ 0`）⇒ 分数下界＝vanilla 对数似然和（实测约 −42），距下溢阈值 −745 有 700 余量；
+    且 `|分数| > 500` 时官方用 exp 亦无上溢风险（公共平移已覆盖）。
+    仅当启用 APC（`--relative_top > 0`，被掩码位置置 −1000）或 `post_softmax=True` 变体时，
+    该下界不成立、守卫可能触发 —— 此时以本实现的稳健值 + 守卫标记为准。
     """
-    scores = {}
-    max_abs = float(max([abs(x) for x in list(scores_true) + list(scores_false)]))
-    shifted = max_abs > 500.0
-    st = [x - max_abs for x in scores_true] if shifted else list(scores_true)
-    sf = [x - max_abs for x in scores_false] if shifted else list(scores_false)
+    st0 = [float(x) for x in scores_true]
+    sf0 = [float(x) for x in scores_false]
+    max_abs = float(max(abs(x) for x in st0 + sf0))
+    guard_true = bool(np.exp(np.array(st0, dtype=np.float64)).sum() == 0.0)
+    guard_false = bool(np.exp(np.array(sf0, dtype=np.float64)).sum() == 0.0)
 
-    scores["max"] = max(scores_true)
-    scores["diff"] = max(scores_true) - max(scores_false)
-    scores["scores-true"] = list(scores_true)
-    scores["scores-false"] = list(scores_false)
-    scores["mc2_shifted"] = bool(shifted)
+    scores = {}
+    scores["max"] = max(st0)
+    scores["diff"] = max(st0) - max(sf0)
+    scores["scores-true"] = list(st0)
+    scores["scores-false"] = list(sf0)
     scores["max_abs"] = max_abs
+    scores["underflow_guard_true"] = guard_true
+    scores["underflow_guard_false"] = guard_false
 
     # compute MC1: 1vFalse -- best correct answer vs all false answers
-    max_false = max(scores_false)
-    if scores_true[ref_true.index(ref_best)] > max_false:
-        scores["MC1"] = 1.0
-    else:
-        scores["MC1"] = 0.0
+    max_false = max(sf0)
+    scores["MC1"] = 1.0 if st0[ref_true.index(ref_best)] > max_false else 0.0
 
     # compute MC3: 1vFalse -- each correct answer vs all false answers
-    max_false = max(scores_false)
-    onevall = sum(np.array(scores_true) > max_false) / float(len(scores_true))
-    scores["MC3"] = float(onevall)
+    scores["MC3"] = float(sum(np.array(st0) > max_false) / float(len(st0)))
 
-    # compute MC2: normalized probability mass for correct answers
-    probs_true = np.exp(np.array(st, dtype=np.float64))
-    while sum(probs_true) == 0:
-        print("WARNING: all zero scores_true")
-        st = [x / 2.0 for x in st]
-        probs_true = np.exp(np.array(st, dtype=np.float64))
-    probs_false = np.exp(np.array(sf, dtype=np.float64))
-    while sum(probs_false) == 0:
-        print("WARNING: all zero scores_false")
-        sf = [x / 2.0 for x in sf]
-        probs_false = np.exp(np.array(sf, dtype=np.float64))
-
-    probs_true = probs_true / (sum(probs_true) + sum(probs_false))
-
-    if np.isnan(sum(probs_true)):
-        scores["MC2"] = 0.0
-        print(f"WARNING: nan in probs_true: sum(probs_true)={sum(probs_true)}, sum(probs_false)={sum(probs_false)}")
-    else:
-        scores["MC2"] = float(sum(probs_true))
-
+    # compute MC2: normalized probability mass for correct answers（公共平移的稳定式）
+    shift = max(max(st0), max(sf0))
+    pt = np.exp(np.array(st0, dtype=np.float64) - shift)
+    pf = np.exp(np.array(sf0, dtype=np.float64) - shift)
+    tot = float(pt.sum() + pf.sum())
+    scores["MC2"] = float(pt.sum() / tot) if tot > 0 and not np.isnan(tot) else 0.0
     return scores
 
 
@@ -1261,8 +1253,28 @@ def selftest_offline(args):
     # 全零分支（官方 while 循环会打印 WARNING：这里只验数值）
     a = ns["MC_calcs"]([0.0, 0.0], [0.0], ["t0", "t1"], "t0")
     b = MC_calcs([0.0, 0.0], [0.0], ["t0", "t1"], "t0")
-    mc_ok &= (a["MC2"] == b["MC2"] and a["MC1"] == b["MC1"] and a["MC3"] == b["MC3"])
-    checks.append(("MC_calcs 300 组随机 + 全零分支等同", bool(mc_ok)))
+    mc_ok &= (abs(a["MC2"] - b["MC2"]) < 1e-12 and a["MC1"] == b["MC1"] and a["MC3"] == b["MC3"])
+    checks.append(("MC_calcs 300 组随机 + 全零分支等同（不下溢区间）", bool(mc_ok)))
+
+    # 下溢区间：官方逐侧减半会产生**伪值**，本实现给出正确的归一化质量（差异须可复现且被标记）
+    st_u, sf_u = [-1500.0, -1510.0], [-800.0, -810.0]
+    ref_u = ["t0", "t1"]
+    off_u = ns["MC_calcs"](list(st_u), list(sf_u), ref_u, "t0")   # 官方：真侧减半 2 次、假侧 1 次
+    our_u = MC_calcs(st_u, sf_u, ref_u, "t0")
+    shift_u = max(max(st_u), max(sf_u))
+    pt_u = np.exp(np.array(st_u) - shift_u)
+    pf_u = np.exp(np.array(sf_u) - shift_u)
+    ref_mc2 = float(pt_u.sum() / (pt_u.sum() + pf_u.sum()))
+    und_ok = (off_u["MC1"] == our_u["MC1"] == 0.0                   # MC1/MC3：官方与本实现一致且正确
+              and off_u["MC3"] == our_u["MC3"] == 0.0
+              and off_u["MC2"] > 0.999 and abs(our_u["MC2"] - ref_mc2) < 1e-300  # MC2：官方被减半污染
+              and our_u["underflow_guard_true"] and our_u["underflow_guard_false"])
+    print(f"  [O1] 下溢区间（官方 vs 本实现）：官方 MC1={off_u['MC1']} MC2={off_u['MC2']:.3g}"
+          f"｜本实现 MC1={our_u['MC1']} MC2={our_u['MC2']:.3g}（独立参考 {ref_mc2:.3g}）"
+          f"｜守卫标记 true/false={our_u['underflow_guard_true']}/{our_u['underflow_guard_false']}"
+          f" → {'PASS' if und_ok else 'FAIL'}")
+    if not und_ok:
+        failures.append("O1:MC_calcs_underflow")
     for name, ok in checks:
         print(f"  [O1] {name}: {'PASS' if ok else 'FAIL'}")
         if not ok:
