@@ -165,6 +165,38 @@ def profile_question(model, prompt, cont, depths, prompt_positions=64, max_ctx=0
     return out
 
 
+def tally_selection_counts(arr_official, arr_true, depths, buckets):
+    """逐位置选层计数（纯函数，可离线验证）。
+
+    Args:
+        arr_official / arr_true: [n_depth, n_pos] 官方 R 与严格 JSD 的逐位置数值
+        depths: 候选深度列表（与矩阵行对应）；buckets: [(lo, hi), ...]
+    Returns:
+        (全局计数_官方向量, 全局计数_严格JSD, {bucket 标签: {深度: 计数}})
+    """
+    import numpy as _np
+
+    glob_off, glob_true, by_bucket = {}, {}, {}
+    if arr_official.size == 0:
+        return glob_off, glob_true, by_bucket
+    for j in arr_true.argmax(axis=0):
+        d = int(depths[int(j)])
+        glob_true[d] = glob_true.get(d, 0) + 1
+    for j in arr_official.argmax(axis=0):
+        d = int(depths[int(j)])
+        glob_off[d] = glob_off.get(d, 0) + 1
+    for lo, hi in buckets:
+        rows = [i for i, d in enumerate(depths) if lo <= d < hi]
+        if not rows:
+            continue
+        cnt = {}
+        for j in arr_official[rows].argmax(axis=0):
+            d = int(depths[rows[int(j)]])
+            cnt[d] = cnt.get(d, 0) + 1
+        by_bucket[f"bucket_{lo}_{hi}"] = cnt
+    return glob_off, glob_true, by_bucket
+
+
 def run(args):
     from common import load_model_and_unembed
 
@@ -207,16 +239,23 @@ def run(args):
             acc["r_prompt"][d].extend(r["r_prompt"][d])
         acc["anchor_answer"].extend(r["anchor_answer"])
         acc["anchor_prompt"].extend(r["anchor_prompt"])
-        # 逐位置 argmax 层：官方选层量 R（部署口径）与严格 JSD 各统计一次
+        # 逐位置 argmax 层：官方选层量 R（部署口径）与严格 JSD 各统计一次；
+        # 另按 bucket 分别统计——判断"逐 token 动态选层"是否退化为固定层（该退化会使 dynamic 条件等价于某 static 条件）
         for key, sel_key, selJ_key in (("jsd_answer", "sel_answer", "selJ_answer"),
                                        ("jsd_prompt", "sel_prompt", "selJ_prompt")):
+            face = key.split("_")[1]
             arr = np.array([r[key][d] for d in depths])       # [n_depth, n_pos] 严格 JSD
-            arrR = np.array([r["r_" + key.split("_")[1]][d] for d in depths])
+            arrR = np.array([r["r_" + face][d] for d in depths])
             if arr.size:
-                for j in arr.argmax(axis=0):
-                    acc[selJ_key][depths[int(j)]] += 1
-                for j in arrR.argmax(axis=0):
-                    acc[sel_key][depths[int(j)]] += 1
+                g_off, g_true, by_bucket = tally_selection_counts(arrR, arr, depths, buckets)
+                for d, c in g_off.items():
+                    acc[sel_key][d] += c
+                for d, c in g_true.items():
+                    acc[selJ_key][d] += c
+                for label, cnt in by_bucket.items():
+                    tgt = acc.setdefault(f"{label}_{face}", {})
+                    for d, c in cnt.items():
+                        tgt[d] = tgt.get(d, 0) + c
         n_used += 1
         if (qi + 1) % 20 == 0:
             print(f"  [{qi + 1}/{len(questions)}] {time.time() - t0:.0f}s")
@@ -250,6 +289,14 @@ def run(args):
                           "r_mean_by_depth_x1e5": {str(d): r_mean[d] * 1e5 for d in depths},
                           "spearman_depth_vs_jsd": rho,
                           "n_positions": len(acc[key][depths[0]]) if acc[key][depths[0]] else 0,
+                          "selection_by_bucket_official_R": {
+                              f"bucket_{lo}_{hi}": {str(k): int(x) for k, x in
+                                                    acc.get(f"bucket_{lo}_{hi}_{profile}", {}).items()}
+                              for lo, hi in buckets},
+                          "anchor_near_ceiling": bool(anchor > 0.95 * math.log(2)),
+                          "anchor_note": ("锚点已达 JSD 上界 ln2 的 95% 以上 ⇒ 该识别面上成熟层分布接近单点分布，"
+                                          "条件 (i)(iii) 的分辨力受限，需以深层分位数展布为主要证据"
+                                          if anchor > 0.95 * math.log(2) else "锚点未触顶"),
                           "verdict": v, "verdict_sensitivity_true_jsd_selection": v_selJ}
 
     main_v = stats[args.verdict_on]["verdict"]
@@ -290,7 +337,9 @@ def run(args):
              f"- 事前设定的阈值：ratio≥{THR_JSD_RATIO}、χ² p<{THR_CHI2_P}、max/anchor≥{THR_ANCHOR_FRAC}",
              f"- 主曲线＝**严格 JSD**；条件 (ii) 的选层计数用**官方 R 口径**（部署实际选层量）",
              f"- **终止判定结论（主判面={args.verdict_on}）：{main_v['verdict']}（{main_v['n_pass']}/3）**\n",
-             "| depth | 严格 JSD ×1e5 (mean) | median | p10 | p90 | 官方 R ×1e5 | R 选层计数 | J 选层计数 |",
+             "- 注：严格 JSD 与官方 R/V **标度不同**（前者为归一化散度、上界 ln2；后者为词表均值 KL），"
+             "**只可比趋势与选层 argmax，不可直接比大小**",
+             "| depth | 严格 JSD ×1e5 (mean) | median | p10 | p90 | 官方 R/V ×1e5（词表均值，选层用） | R 选层计数 | J 选层计数 |",
              "|---|---|---|---|---|---|---|---|"]
     for d in depths:
         s = stats[args.verdict_on]
