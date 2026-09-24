@@ -36,6 +36,13 @@
 #   bash scripts/review_local.sh rank-audit        # 秩代理口径复算（artifact 修复+B1 min-rank+B4 lens），1.7B seed123
 #   bash scripts/review_local.sh rank-audit-456    # 同上 seed456
 #   bash scripts/review_local.sh rank-audit-8b     # 同上 8B（服务器用；SEED 可覆盖）
+#   bash scripts/review_local.sh dola-mc-selftest  # DoLa 原生域 S0 门禁（零 GPU：官方逐字等价 + 管线 stub）
+#   bash scripts/review_local.sh dola-mc-selftest-model # S0 门禁 model 组（HF 一致性/零对比/lens/长度/位置，1.7B）
+#   bash scripts/review_local.sh dola-mc-jsd       # S1：JSD 分化预分析（判停点，1.7B n=100）
+#   bash scripts/review_local.sh dola-mc-smoke     # S2 冒烟（n=30，首次上真机先跑这个）
+#   bash scripts/review_local.sh dola-mc           # S2 正式（1.7B，817 题全量，两折）
+#   bash scripts/review_local.sh dola-mc-8b        # 同上 8B（服务器用，~1–1.5h）
+#   bash scripts/review_local.sh dola-mc-8b-jsd    # S1 8B 档（服务器用）
 #
 # 说明：每条命令写成单行（`\` 续行在部分终端粘贴时会因行尾空格失效）。
 # 服务器命令请自行补 `unset HF_ENDPOINT && HF_HOME=...` 前缀（见 runbook §2）。
@@ -184,6 +191,32 @@ case "${1:-}" in
   rank-audit-8b)
     # 服务器用（SEED=123/456 覆盖）；⚠️ --model 必须传 repo id
     env -u HF_ENDPOINT HF_HOME="${HF_HOME_SERVER:-/root/autodl-tmp/huggingface_cache}" python -u experiments/lin_theory/audit_rank_proxy_recompute.py --model "$MODEL_8B" --layer_early 28 --n_test 300 --seed_test "${SEED:-123}"
+    ;;
+  dola-mc-selftest)
+    # S0 门禁（零 GPU）：官方源码逐字等价性 + 打分管线 stub 冒烟
+    python experiments/lin_theory/main_dola_mc.py --selftest offline
+    python experiments/lin_theory/main_dola_mc.py --selftest stub
+    python experiments/lin_theory/diagnose_dola_jsd_layers.py --selftest
+    ;;
+  dola-mc-selftest-model)
+    # S0 门禁（需模型）：HF 一致性 + 零对比固定点 + lens + prompt 长度 + 位置对齐（约 5–10 分钟）
+    python experiments/lin_theory/main_dola_mc.py --selftest model --model "$MODEL_1P7B" --parity_n "${PARITY_N:-5}"
+    ;;
+  dola-mc-jsd)
+    python experiments/lin_theory/diagnose_dola_jsd_layers.py --model "$MODEL_1P7B" --n_questions "${NQ:-100}"
+    ;;
+  dola-mc-smoke)
+    python experiments/lin_theory/main_dola_mc.py --model "$MODEL_1P7B" --n_questions 30 --fold all --tag smoke30
+    ;;
+  dola-mc)
+    python experiments/lin_theory/main_dola_mc.py --model "$MODEL_1P7B" --fold all --tag full817
+    ;;
+  dola-mc-8b)
+    # 服务器用；跑完把 outputs/dola_mc_repro/ 整个目录 scp 回本地再判读（判读零 GPU）
+    env -u HF_ENDPOINT HF_HOME="${HF_HOME_SERVER:-/root/autodl-tmp/huggingface_cache}" python -u experiments/lin_theory/main_dola_mc.py --model "$MODEL_8B" --fold all --tag full817
+    ;;
+  dola-mc-8b-jsd)
+    env -u HF_ENDPOINT HF_HOME="${HF_HOME_SERVER:-/root/autodl-tmp/huggingface_cache}" python -u experiments/lin_theory/diagnose_dola_jsd_layers.py --model "$MODEL_8B" --n_questions "${NQ:-100}"
     ;;
   *)
     sed -n '2,40p' "$0"
