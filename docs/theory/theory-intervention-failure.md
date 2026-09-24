@@ -125,6 +125,34 @@ $$\log P(t_1 \mid x) = \underbrace{\log P(t_1)}_{\text{语言模型流畅度（�
   artifact；取后者 ⇒ 正常内容词）。⇒ 支持换代理候选 2（**别名 min-rank**，即 B1）与双口径（B4），
   需一次轻前向复算（1.7B 本地分钟级、8B 服务器分钟级）。
 
+#### 1.2.1-b 口径复算结果（2026-09-24，1.7B 双 seed，n=300×2）
+
+- **工具**：`experiments/lin_theory/audit_rank_proxy_recompute.py`（每样本 1 前向 + 1 贪婪生成，无干预；
+  `--selftest` 6/6）→ `experiments/outputs/rank_audit_proxy/`；
+  判读 `experiments/lin_theory/analyze_rank_audit.py`（与 TLDC real 臂 β=0.20 join，join 率 100%）。
+- **三套口径**：`old`（已发布＝第一非空别名的原始首 token）/ `fixed_first`（跳过纯空白 token，修 artifact）/
+  `min_alias`（B1：min over 全部别名）。
+
+| 口径 | KW (s123/s456) | 救回率 KW 内 | 破坏率 KC 内 | 净事件 | All Δ (pp) |
+|---|---|---|---|---|---|
+| **old**（已发布，复现逐位一致） | 71 / 64 | 7.0% / 10.9% | 22.4% / 22.7% | −12 / −10 | −2.00 / −3.00 |
+| **fixed_first**（修 artifact） | 61 / 59 | 6.6% / 11.9% | 23.6% / 23.2% | −13 / −9 | −2.00 / −3.00 |
+| **min_alias**（B1） | 112 / 106 | 10.7% / 12.3% | 16.1% / 18.4% | −7 / −8 | −2.00 / −3.00 |
+
+- **预注册判据触发**：KW 计数 pooled 135 → 120（fixed_first，**−11.1%**，≥10% 阈值）；
+  min_alias 则 +61%（KW 翻倍、**DK 从 314 跌到 150**）。救回率变化 fixed_first −0.5/+0.9pp、min_alias +3.7/+1.3pp。
+- **稳健性结论（可写进论文）**：**三套口径下 1.7B TLDC 均为净负**（净事件 −7…−13、All Δ −2.00/−3.00pp 不变）
+  ⇒ 「1.7B 救回＝通用扰动、净负」这一主线结论**不依赖标签口径**。
+- **两条操作含义**：① `fixed_first` 是同规则去 bug（无副作用）⇒ 后续新数字建议直接用；
+  已发布数字的重算可用本档案按 question 重新划分（无需再跑模型）。② `min_alias` 是**不同定义**
+  （"知道任一别名即算知道"，know 占比 77%），会同时抬高救回率、稀释破坏率 ⇒ **须用户/导师决定**，
+  不得默认替换。
+- **B4（final vs ℓ\* lens 同侧）**：s123 **64.0%**、s456 **60.3%** ⇒ 知识划分对读出层同样敏感
+  （与"rank(final) vs rank(ℓ\* lens) 中位差 1605、92.3% 差>20"一致）。
+- **空格 artifact 实测**：s123 15 例、s456 11 例（= 旧口径下 rank≡1 的空白 token 样本）。
+- ⏳ **8B 档待跑**（服务器，命令见脚本头；跑完 `analyze_rank_audit.py --tag Qwen3-8B` 同法判读）。
+
+
 
 ### 1.3 核心悖论
 
