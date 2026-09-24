@@ -1665,23 +1665,27 @@ def judge(args):
     ps_arms = sorted({a for a in per_q[0]["mc"] if "__ps" in a})
     ps_block = None
     if ps_arms:
-        dup = [a for a in ps_arms
-               if a.replace("__ps1", "") in per_q[0]["mc"]
+        # baseline 不含对比项 ⇒ post_softmax 对其无效，`baseline__ps1 ≡ baseline` 属**定义使然**，
+        # 不参与"重复值"判定（2026-09-24：首版守卫曾据此误判整组无效）。
+        dup = [a for a in ps_arms if not a.startswith("baseline")
+               and a.replace("__ps1", "") in per_q[0]["mc"]
                and all(r["mc"][a] == r["mc"][a.replace("__ps1", "")] for r in per_q)]
         if dup:
             ps_block = {"invalid": dup,
                         "note": "诊断组与主条件逐题相同 ⇒ 键名冲突缺陷产物，不得使用（需以修正版重跑）"}
         else:
+            ref = "baseline__ps1" if "baseline__ps1" in per_q[0]["mc"] else "baseline"
             rows = {}
-            for a in [x for x in ps_arms if x.startswith("dyn_b")]:
+            for a in [x for x in ps_arms if not x.startswith("baseline")]:
                 m = a.replace("__ps1", "")
-                rows[a] = {"MC2": float(np.mean([r["mc"][a]["MC2"] for r in per_q])),
-                           "MC1": float(np.mean([r["mc"][a]["MC1"] for r in per_q])),
-                           "MC3": float(np.mean([r["mc"][a]["MC3"] for r in per_q])),
-                           "delta_MC2_vs_main_baseline":
-                               float(np.mean([r["mc"][a]["MC2"] - r["mc"]["baseline__ps1"]["MC2"]
-                                              for r in per_q]) * 100) if "baseline__ps1" in per_q[0]["mc"] else None,
-                           "main_arm": m, "main_arm_MC2": float(np.mean([r["mc"][m]["MC2"] for r in per_q]))}
+                def _mu(arm, key):
+                    return float(np.mean([r["mc"][arm][key] for r in per_q]))
+                rows[a] = {"MC1": _mu(a, "MC1"), "MC2": _mu(a, "MC2"), "MC3": _mu(a, "MC3"),
+                           "delta_MC1_points": 100 * (_mu(a, "MC1") - _mu(ref, "MC1")),
+                           "delta_MC2_points": 100 * (_mu(a, "MC2") - _mu(ref, "MC2")),
+                           "delta_MC3_points": 100 * (_mu(a, "MC3") - _mu(ref, "MC3")),
+                           "main_arm": m,
+                           "main_delta_MC2_points": 100 * (_mu(m, "MC2") - _mu("baseline", "MC2"))}
             ps_block = {"rows": rows,
                         "note": "事后追加的稳健性诊断（post_softmax 取反）：因官方 MC 口径不归一化、"
                                 "MC2 会向 0/1 饱和，此块用于说明增益幅度不是该归一化缺失的伪影；"
@@ -1712,10 +1716,9 @@ def judge(args):
             lines.append(f"- ⚠️ 该诊断组无效：{[a for a in ps_block['invalid']]}（{ps_block['note']}）")
         else:
             for a, r in ps_block["rows"].items():
-                lines.append(f"- `{a}`：MC1={r['MC1']:.4f} MC2={r['MC2']:.4f} MC3={r['MC3']:.4f}；"
-                             f"对应主条件 MC2={r['main_arm_MC2']:.4f}"
-                             + (f"；ΔMC2(vs 同变体 baseline)={r['delta_MC2_vs_main_baseline']:+.2f}pp"
-                                if r["delta_MC2_vs_main_baseline"] is not None else ""))
+                lines.append(f"- `{a}`：ΔMC1={r['delta_MC1_points']:+.2f}pp、ΔMC2={r['delta_MC2_points']:+.2f}pp、"
+                             f"ΔMC3={r['delta_MC3_points']:+.2f}pp（同变体 baseline 为参照）；"
+                             f"同条件在主协议下 ΔMC2={r['main_delta_MC2_points']:+.2f}pp")
             lines.append(f"- {ps_block['note']}")
 
     out_md = path.with_name(f"judge_{path.stem}.md")
