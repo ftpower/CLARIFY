@@ -33,6 +33,9 @@
 #   bash scripts/review_local.sh verified-rand     # 验证器 footprint 安慰剂（同批 real+sym+rand，KEEP_P 可覆盖）
 #   bash scripts/review_local.sh verified-rand-smoke # 同上小样本冒烟（n=30，先跑这个验证链路）
 #   bash scripts/review_local.sh verified-rand-8b  # 同上 8B（服务器用；**必须**显式传 KEEP_P=同批标定）
+#   bash scripts/review_local.sh rank-audit        # 秩代理口径复算（artifact 修复+B1 min-rank+B4 lens），1.7B seed123
+#   bash scripts/review_local.sh rank-audit-456    # 同上 seed456
+#   bash scripts/review_local.sh rank-audit-8b     # 同上 8B（服务器用；SEED 可覆盖）
 #
 # 说明：每条命令写成单行（`\` 续行在部分终端粘贴时会因行尾空格失效）。
 # 服务器命令请自行补 `unset HF_ENDPOINT && HF_HOME=...` 前缀（见 runbook §2）。
@@ -171,8 +174,19 @@ case "${1:-}" in
     # seed456 用 SEED=456 再跑一次（两档都存同一目录 geometry_archive_8b/）
     env -u HF_ENDPOINT HF_HOME="${HF_HOME_SERVER:-/root/autodl-tmp/huggingface_cache}" python -u experiments/lin_theory/dump_geometry_archive.py --model "$MODEL_8B" --layer_early 28 --n_test 300 --seed_test "${SEED:-123}" --operator baseline --output_dir experiments/outputs/geometry_archive_8b
     ;;
+  rank-audit)
+    # 秩代理口径复算（空格 artifact 修复 + B1 别名 min-rank + B4 lens 列）；1.7B seed123，分钟级
+    python experiments/lin_theory/audit_rank_proxy_recompute.py --model "$MODEL_1P7B" --layer_early 20 --n_test 300 --seed_test "${SEED:-123}"
+    ;;
+  rank-audit-456)
+    python experiments/lin_theory/audit_rank_proxy_recompute.py --model "$MODEL_1P7B" --layer_early 20 --n_test 300 --seed_test 456
+    ;;
+  rank-audit-8b)
+    # 服务器用（SEED=123/456 覆盖）；⚠️ --model 必须传 repo id
+    env -u HF_ENDPOINT HF_HOME="${HF_HOME_SERVER:-/root/autodl-tmp/huggingface_cache}" python -u experiments/lin_theory/audit_rank_proxy_recompute.py --model "$MODEL_8B" --layer_early 28 --n_test 300 --seed_test "${SEED:-123}"
+    ;;
   *)
-    sed -n '2,20p' "$0"
+    sed -n '2,40p' "$0"
     exit 1
     ;;
 esac
