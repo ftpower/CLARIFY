@@ -41,6 +41,9 @@
 #   bash scripts/review_local.sh dola-mc-jsd       # S1：JSD 分化预分析（判停点，1.7B n=100）
 #   bash scripts/review_local.sh dola-mc-smoke     # S2 冒烟（n=30，首次上真机先跑这个）
 #   bash scripts/review_local.sh dola-mc           # S2 正式（1.7B，817 题全量，两折）
+#   bash scripts/review_local.sh dola-mc-resume    # 中断后续跑（读同名 .partial.jsonl）
+#   bash scripts/review_local.sh dola-mc-finalize  # 把中断的 partial 定稿（可判读已完成题数）
+#   bash scripts/review_local.sh dola-mc-judge     # 零 GPU 判读（两折选桶 + 三分支判定）
 #   bash scripts/review_local.sh dola-mc-8b        # 同上 8B（服务器用，~1–1.5h）
 #   bash scripts/review_local.sh dola-mc-8b-jsd    # S1 8B 档（服务器用）
 #
@@ -210,6 +213,17 @@ case "${1:-}" in
     ;;
   dola-mc)
     python experiments/lin_theory/main_dola_mc.py --model "$MODEL_1P7B" --fold all --tag full817
+    ;;
+  dola-mc-resume)
+    # 中断后续跑（同名 .partial.jsonl，指纹须一致；最多只损失当前一题）
+    python experiments/lin_theory/main_dola_mc.py --model "$MODEL_1P7B" --fold all --tag full817 --resume
+    ;;
+  dola-mc-finalize)
+    # 把中断运行的 partial 定稿为标准产物（标注 partial，随后可 --judge 判读已完成题数）
+    python experiments/lin_theory/main_dola_mc.py --finalize experiments/outputs/dola_mc_repro/dola_mc_"${MODEL_TAG:-Qwen3-1.7B}"_full817.partial.jsonl
+    ;;
+  dola-mc-judge)
+    python experiments/lin_theory/main_dola_mc.py --judge experiments/outputs/dola_mc_repro/dola_mc_"${MODEL_TAG:-Qwen3-1.7B}"_full817.json
     ;;
   dola-mc-8b)
     # 服务器用；跑完把 outputs/dola_mc_repro/ 整个目录 scp 回本地再判读（判读零 GPU）

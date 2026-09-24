@@ -70,6 +70,7 @@ S0 前置校验（方案 §4.3，全过才进 S1/S2）
 
 import argparse
 import ast
+import hashlib
 import json
 import math
 import random
@@ -620,12 +621,39 @@ def run(args):
     len_stats = []
     zero_contrast = _zero_contrast_check(model, questions[:3], post_softmax=args.post_softmax)
     tic = time.time()
+
+    # ── 断点续跑：每题增量写入 `.partial.jsonl`（被中断最多损失当前一题）──
+    fp = run_fingerprint(args, arms, depths, buckets, ps_variants)
+    partial = out_dir / f"dola_mc_{args.model.split('/')[-1]}_{args.tag or f'{args.fold}_n{len(questions)}'}.partial.jsonl"
+    done = {}
+    if args.resume and partial.exists():
+        _hdr, _recs = read_partial(partial, expect_fp=fp)
+        _clean, _agg = split_rec_extras(_recs)
+        done = {r["qid"]: r for r in _clean}
+        lens_k, lens_n, n_choices = _agg["lens_k"], _agg["lens_n"], _agg["n_choices"]
+        len_stats = list(_agg["lens_len"])
+        print(f"  [续跑] {partial.name}：已完成 {len(done)} 题，指纹 {fp} 一致 ⇒ 跳过这些题")
+    elif partial.exists():
+        print(f"  ⚠️ 已存在 {partial.name}（{fp}）；如需续跑请加 --resume，否则将覆盖该文件")
+        partial.unlink()
+    append_partial(partial, header={"fp": fp, "args": {k: (str(v) if isinstance(v, Path) else v)
+                                                       for k, v in vars(args).items()},
+                                    "arms": [[n, list(sp)] for n, sp in arms],
+                                    "n_layers": n_layers, "buckets": buckets, "depths": depths,
+                                    "fold_ids": {k: sorted(v) for k, v in fold_ids.items()},
+                                    "zero_contrast": zero_contrast, "data_stats": stats,
+                                    "n_planned": len(questions), "elapsed": 0.0})
+    print(f"  [断点] 逐题增量写入 {partial.name}（中断后可用 --resume 续跑或 --finalize 定稿）")
     for qi, q in enumerate(questions):
+        if qi in done:
+            per_q.append(done[qi])
+            continue
         ref_true, ref_false, ref_best = refs_of(q)
         if ref_best not in ref_true:
             ref_true = [ref_best] + [a for a in ref_true if a != ref_best]
 
         cache: dict[str, dict] = {}
+        _lk0, _ln0, _nc0, _ls0 = lens_k, lens_n, n_choices, len(len_stats)
         ok = True
         for ans in list(ref_true) + list(ref_false):
             if ans in cache:
@@ -650,12 +678,19 @@ def run(args):
             continue
 
         rec, _, _, _ = build_question_record(qi, q, cache, arms, args.save_choice_arms)
+        rec["_lens_k"] = lens_k - _lk0
+        rec["_lens_n"] = lens_n - _ln0
+        rec["_n_choices"] = n_choices - _nc0
+        rec["_lens_len"] = len_stats[_ls0:]
+        _lk0, _ln0, _nc0, _ls0 = lens_k, lens_n, n_choices, len(len_stats)
+        append_partial(partial, rec=rec)
         per_q.append(rec)
         if (qi + 1) % 50 == 0:
             el = time.time() - tic
             print(f"  [{qi + 1}/{len(questions)}] {el:.0f}s elapsed "
                   f"({el / (qi + 1):.2f}s/题, {n_choices} 次选项打分)")
 
+    per_q, _agg = split_rec_extras(per_q)   # 剔除增量写入用的下划线私有字段
     summary = aggregate(per_q, arms)
     print("\n  ── 结果（MC1 / MC2 / MC3；Δ 为相对 baseline 的百分点）──")
     for name, _ in arms:
@@ -673,8 +708,97 @@ def run(args):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=1)
     print(f"\nSaved → {path}")
+    if partial.exists():
+        partial.unlink()
+        print(f"  [断点] 已完成全量，清理 {partial.name}")
     return path
 
+
+
+# ── 断点续跑（每题增量写入；中断/崩溃最多损失当前一题）──────────────────────────
+
+
+def run_fingerprint(args, arms, depths, buckets, ps_variants):
+    """本次运行的配置指纹：续跑/定稿时必须一致（不一致则拒绝，fail-closed）。"""
+    payload = {"model": args.model, "n_questions": args.n_questions, "fold": args.fold,
+               "seed_subset": args.seed_subset, "seed_fold": args.seed_fold, "data": str(args.data),
+               "buckets": buckets, "depths": depths, "static_layers": args.static_layers,
+               "post_softmax": bool(args.post_softmax), "relative_top": args.relative_top,
+               "relative_top_value": args.relative_top_value, "max_ctx": args.max_ctx,
+               "ps_variants": list(ps_variants), "arms": [a for a, _ in arms]}
+    return hashlib.sha256(json.dumps(payload, sort_keys=True, default=str).encode()).hexdigest()[:16]
+
+
+def append_partial(path, header=None, rec=None):
+    """增量追加（header 仅首行）。每题一行 ⇒ 被中断时已完成部分可直接续跑或定稿。"""
+    with open(path, "a", encoding="utf-8") as f:
+        if header is not None:
+            f.write(json.dumps({"kind": "header", **header}, ensure_ascii=False) + "\n")
+        if rec is not None:
+            f.write(json.dumps({"kind": "rec", "rec": rec}, ensure_ascii=False) + "\n")
+
+
+def read_partial(path, expect_fp=None):
+    """读回 (header, recs)。末行截断按损坏忽略；指纹不符直接退出。"""
+    header, recs = None, []
+    with open(path, encoding="utf-8") as f:
+        for ln, line in enumerate(f, 1):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                print(f"  ⚠️ partial 第 {ln} 行不完整（疑似中断截断），已忽略其后的内容")
+                break
+            if obj.get("kind") == "header":
+                header = obj
+            elif obj.get("kind") == "rec":
+                recs.append(obj["rec"])
+    if header is None:
+        raise SystemExit(f"partial 文件缺少头部行：{path}")
+    if expect_fp and header.get("fp") != expect_fp:
+        raise SystemExit(f"partial 指纹不符（文件 {header.get('fp')} ≠ 本次 {expect_fp}）"
+                         f"⇒ 拒绝续跑（请删掉该文件或改用 --tag 另存）")
+    return header, recs
+
+
+def split_rec_extras(recs):
+    """分离记录里的下划线私有字段（增量写入所需的计数），返回 (干净记录, 汇总)。"""
+    clean, agg = [], {"lens_k": 0, "lens_n": 0, "n_choices": 0, "lens_len": []}
+    for r in recs:
+        r = dict(r)
+        agg["lens_k"] += int(r.pop("_lens_k", 0))
+        agg["lens_n"] += int(r.pop("_lens_n", 0))
+        agg["n_choices"] += int(r.pop("_n_choices", 0))
+        agg["lens_len"].extend(r.pop("_lens_len", []))
+        clean.append(r)
+    return clean, agg
+
+
+def finalize_partial(args):
+    """把中断的 partial 文件定稿为标准产物（标注 partial），以便零 GPU 判读。"""
+    import types as _types
+
+    path = Path(args.finalize)
+    header, recs = read_partial(path)
+    if not recs:
+        raise SystemExit(f"partial 无任何完整题目记录：{path}")
+    per_q, agg = split_rec_extras(recs)
+    nsa = _types.SimpleNamespace(**header["args"])
+    out = assemble_output(nsa, per_q, header["arms"], header["n_layers"], header["buckets"],
+                          header["fold_ids"], agg["lens_k"], agg["lens_n"], agg["lens_len"],
+                          agg["n_choices"], header["zero_contrast"], header["data_stats"],
+                          header["elapsed"])
+    out["partial"] = {"source": str(path), "n_questions_done": len(per_q),
+                      "n_questions_planned": header.get("n_planned"),
+                      "note": "由中断运行的 partial 定稿；题数不足 817 时两折判读可能覆盖不全"}
+    dst = path.with_name(path.name.replace(".partial.jsonl", ".json"))
+    with open(dst, "w", encoding="utf-8") as f:
+        json.dump(out, f, ensure_ascii=False, indent=1)
+    print(f"[定稿] 已完成 {len(per_q)} 题（计划 {header.get('n_planned')}）→ {dst}")
+    print("  ⚠️ 这是**部分结果**，判读时须显式披露题数；完整结论仍以全量重跑为准。")
+    return dst
 
 
 def assemble_output(args, per_q, arms, n_layers, buckets, fold_ids, lens_k, lens_n,
@@ -684,6 +808,7 @@ def assemble_output(args, per_q, arms, n_layers, buckets, fold_ids, lens_k, lens
     2026-09-24 教训：`fold_ids` 原样写入时是 **set**，json 不可序列化 ⇒ 会在长跑结束后才崩；
     改为有序列表（`judge()` 只做成员判断，语义不变）。
     """
+    per_q, _agg = split_rec_extras(per_q)   # 剔除增量写入用的下划线私有字段
     summary = aggregate(per_q, arms)
     out = {
         "config": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()},
@@ -1009,7 +1134,8 @@ def selftest_stub():
 
     stub_args = _types.SimpleNamespace(data=str(DEFAULT_DATA), fold="all", seed_fold=1,
                                        post_softmax=False, relative_top=0.0, relative_top_value=-1000.0,
-                                       model="stub", tag="stub", save_choice_arms=[])
+                                       model="stub", tag="stub", save_choice_arms=[],
+                                       n_questions=2, seed_subset=42, static_layers="even", max_ctx=0)
     out_stub = assemble_output(stub_args, [rec, rec], stub_arms, m.cfg.n_layers, [(0, 2)],
                                {"a": {0}, "b": {1}}, 0, 0, [10, 11], 4,
                                {"ok": True}, {"n": 2}, 1.0)
@@ -1020,7 +1146,36 @@ def selftest_stub():
         ser_ok = False
     ps_keys_ok = all(f"{n}__ps1" in res for n in ("s0", "s2", "dyn"))
     ps_differs = any(abs(res[f"{n}__ps1"]["score"] - res[n]["score"]) > 1e-6 for n in ("s0", "s2", "dyn"))
+    # 断点续跑：写入 → 读回 → 指纹校验 → 定稿（覆盖"中断丢结果"的教训）
+    import tempfile
+    from pathlib import Path as _P
+
+    with tempfile.TemporaryDirectory() as td:
+        pf = _P(td) / "x.partial.jsonl"
+        fp_a = run_fingerprint(stub_args, stub_arms, [0, 2], [(0, 2)], [True])
+        append_partial(pf, header={"fp": fp_a, "args": vars(stub_args), "arms": [[n, list(sp)] for n, sp in stub_arms],
+                                   "n_layers": m.cfg.n_layers, "buckets": [(0, 2)], "depths": [0, 2],
+                                   "fold_ids": {"a": [0], "b": [1]}, "zero_contrast": {"ok": True},
+                                   "data_stats": {"n": 2}, "n_planned": 2, "elapsed": 0.0})
+        r1 = dict(rec, _lens_k=1, _lens_n=1, _n_choices=4, _lens_len=[10, 11])
+        append_partial(pf, rec=r1)
+        with open(pf, "a", encoding="utf-8") as f:      # 模拟中断造成的截断
+            f.write('{"kind": "rec", "rec": {"qid": 9')
+        with open(pf, "a", encoding="utf-8") as f:
+            f.write('\n')
+        hdr_b, recs_b = read_partial(pf, expect_fp=fp_a)
+        clean_b, agg_b = split_rec_extras(recs_b)
+        rt_ok = (len(clean_b) == 1 and clean_b[0]["qid"] == 0 and "_lens_k" not in clean_b[0]
+                 and agg_b["lens_k"] == 1 and agg_b["n_choices"] == 4 and agg_b["lens_len"] == [10, 11])
+        mismatch_blocked = False
+        try:
+            read_partial(pf, expect_fp="deadbeef")
+        except SystemExit:
+            mismatch_blocked = True
+
     checks = [
+        ("断点续跑（截断行容忍 + 私有字段分离 + 指纹不符拒绝）", rt_ok and mismatch_blocked,
+         [len(clean_b), agg_b["lens_k"], mismatch_blocked], [1, 1, True]),
         ("post_softmax 诊断条件（键名齐备且数值与主条件不同）", ps_keys_ok and ps_differs,
          sorted(k for k in res if k.endswith("__ps1")), ["dyn__ps1", "s0__ps1", "s2__ps1"]),
         ("产物可 JSON 序列化（fold_ids 为 set 时亦须通过）", ser_ok,
@@ -1505,11 +1660,17 @@ def main():
     ap.add_argument("--parity_device", type=str, default="cpu")
     ap.add_argument("--parity_dtype", type=str, default="float32")
     ap.add_argument("--lens_min_agree", type=float, default=0.99)
+    ap.add_argument("--resume", action="store_true", help="从同名 .partial.jsonl 续跑（指纹须一致）")
+    ap.add_argument("--finalize", type=str, default=None,
+                    help="把中断运行的 .partial.jsonl 定稿为标准产物（标注 partial，随后可 --judge）")
     ap.add_argument("--judge", type=str, default=None, help="对已有结果 JSON 做零 GPU 判读")
     args = ap.parse_args()
 
     if args.judge:
         judge(args)
+        return
+    if args.finalize:
+        finalize_partial(args)
         return
     if args.selftest == "offline":
         selftest_offline(args)
