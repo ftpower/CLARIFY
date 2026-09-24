@@ -636,20 +636,7 @@ def run(args):
             print(f"  ⚠️ 第 {qi} 题出现空续写（跳过并计入 bad_questions）")
             continue
 
-        rec = {"qid": qi, "n_true": len(ref_true), "n_false": len(ref_false),
-               "scores": {}, "mc": {}, "sel": {}}
-        for name, _ in arms:
-            st = [cache[a]["score"] for a in ref_true]
-            sf = [cache[a]["score"] for a in ref_false]
-            mc = MC_calcs(st, sf, ref_true, ref_best)
-            rec["mc"][name] = {k: mc[k] for k in ("MC1", "MC2", "MC3")}
-            if name in args.save_choice_arms or name == "baseline":
-                rec["scores"][name] = {"true": [float(x) for x in st], "false": [float(x) for x in sf]}
-            if name.startswith("dyn"):
-                sel = []
-                for a in ref_true + ref_false:
-                    sel.extend(cache[a][name]["selected_layers"])
-                rec["sel"][name] = sel
+        rec, _, _, _ = build_question_record(qi, q, cache, arms, args.save_choice_arms)
         per_q.append(rec)
         if (qi + 1) % 50 == 0:
             el = time.time() - tic
@@ -665,6 +652,26 @@ def run(args):
     if lens_n:
         print(f"  [自检 M3] lens 重算成熟层 argmax 一致率 = {lens_k / lens_n:.4f} (n={lens_n})")
 
+    out = assemble_output(args, per_q, arms, n_layers, buckets, fold_ids, lens_k, lens_n,
+                          len_stats, n_choices, zero_contrast, stats, time.time() - t0)
+    tag = args.tag or f"{args.fold}_n{len(per_q)}"
+    model_tag = args.model.split("/")[-1]
+    path = out_dir / f"dola_mc_{model_tag}_{tag}.json"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(out, f, ensure_ascii=False, indent=1)
+    print(f"\nSaved → {path}")
+    return path
+
+
+
+def assemble_output(args, per_q, arms, n_layers, buckets, fold_ids, lens_k, lens_n,
+                    len_stats, n_choices, zero_contrast, data_stats, elapsed):
+    """组装最终记录（纯逻辑，可离线测：`run()` 的产物必须能被 json.dump 序列化）。
+
+    2026-09-24 教训：`fold_ids` 原样写入时是 **set**，json 不可序列化 ⇒ 会在长跑结束后才崩；
+    改为有序列表（`judge()` 只做成员判断，语义不变）。
+    """
+    summary = aggregate(per_q, arms)
     out = {
         "config": {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()},
         "protocol": {
@@ -684,8 +691,9 @@ def run(args):
                           "无 OE 指标", "demo 文本在 Qwen 分词下的长度见 prompt_len"],
         },
         "data": {"path": str(args.data), "n_questions": len(per_q), "n_choices_scored": n_choices,
-                 "fold": args.fold, "seed_fold": args.seed_fold, "fold_ids": fold_ids,
-                 "validation": stats,
+                 "fold": args.fold, "seed_fold": args.seed_fold,
+                 "fold_ids": {k: sorted(v) for k, v in fold_ids.items()},
+                 "validation": data_stats,
                  "prompt_len": {"mean": float(np.mean(len_stats)) if len_stats else 0.0,
                                 "p95": float(np.percentile(len_stats, 95)) if len_stats else 0.0,
                                 "max": int(np.max(len_stats)) if len_stats else 0,
@@ -696,15 +704,36 @@ def run(args):
         "delta_mc2_points": {k: 100 * (summary[k]["MC2"] - summary["baseline"]["MC2"]) for k, _ in arms},
         "premature_layer_dist": layer_dist(per_q, arms, n_layers),
         "per_question": per_q,
-        "timing": {"total_sec": time.time() - t0},
+        "timing": {"total_sec": elapsed},
     }
-    tag = args.tag or f"{args.fold}_n{len(per_q)}"
-    model_tag = args.model.split("/")[-1]
-    path = out_dir / f"dola_mc_{model_tag}_{tag}.json"
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(out, f, ensure_ascii=False, indent=1)
-    print(f"\nSaved → {path}")
-    return path
+    return out
+
+
+def build_question_record(qi, q, cache, arms, save_arms=()):
+    """把"逐选项前向缓存"聚合为一道题的记录（纯逻辑，可离线测）。
+
+    cache: {选项文本: score_choice(...) 的返回值}；返回值内含每个实验条件的 {"score", "selected_layers", ...}。
+    2026-09-24 教训：此处曾漏写条件名（`cache[a]["score"]`）而在首次真实运行即 KeyError ⇒
+    已抽出为纯函数并纳入 `--selftest stub` 覆盖。
+    """
+    ref_true, ref_false, ref_best = refs_of(q)
+    if ref_best not in ref_true:
+        ref_true = [ref_best] + [a for a in ref_true if a != ref_best]
+    rec = {"qid": qi, "n_true": len(ref_true), "n_false": len(ref_false),
+           "scores": {}, "mc": {}, "sel": {}}
+    for name, _ in arms:
+        st = [cache[a][name]["score"] for a in ref_true]
+        sf = [cache[a][name]["score"] for a in ref_false]
+        mc = MC_calcs(st, sf, ref_true, ref_best)
+        rec["mc"][name] = {k: mc[k] for k in ("MC1", "MC2", "MC3")}
+        if name in save_arms or name == "baseline":
+            rec["scores"][name] = {"true": [float(x) for x in st], "false": [float(x) for x in sf]}
+        if name.startswith("dyn"):
+            sel = []
+            for a in ref_true + ref_false:
+                sel.extend(cache[a][name]["selected_layers"])
+            rec["sel"][name] = sel
+    return rec, ref_true, ref_false, ref_best
 
 
 def split_folds(n, seed_fold):
@@ -945,7 +974,40 @@ def selftest_stub():
     ref_s2 = float(_diff_logits(mature, proj(h1[0, pos, :]), False, 0.0, -1000.0)[
         torch.arange(len(pos)), cont_ids].sum().item())
 
+    # 端到端聚合（覆盖 run() 的逐题记录构造，防"首次真实运行即崩"）
+    stub_q = {"question": "who wrote it", "best_answer": "shakespeare.",
+              "correct": ["shakespeare.", "william shakespeare."], "incorrect": ["bacon.", " Marlowe."]}
+    stub_arms = [("baseline", ("baseline",)), ("dyn", ("dynamic", (0, 2)))]
+    cache = {}
+    _rt, _rf, _ = refs_of(stub_q)          # 与 run() 同源：缓存键必须用**归一化后**的选项文本
+    for a in _rt + _rf:
+        pr, ct = f"Q: {stub_q['question']}\nA:", " " + a
+        cache[a] = score_choice(m, pr, ct, stub_arms, [0, 2], lens_check=False)
+    rec, rt, rf, rb = build_question_record(0, stub_q, cache, stub_arms, save_arms=("dyn",))
+    mc_ok = set(rec["mc"]) == {"baseline", "dyn"} and all(
+        0.0 <= rec["mc"][a][k] <= 1.0 for a in rec["mc"] for k in ("MC1", "MC2", "MC3"))
+    n_pos_expect = sum(len(cache[a]["dyn"]["selected_layers"]) for a in rt + rf)
+    agg_ok = (mc_ok and rec["n_true"] == 2 and rec["n_false"] == 2
+              and len(rec["sel"]["dyn"]) == n_pos_expect
+              and set(rec["scores"]) == {"baseline", "dyn"})
+    # 产物组装与序列化（覆盖 run() 尾部：长跑结束后才写 JSON，序列化失败代价最高）
+    import types as _types
+
+    stub_args = _types.SimpleNamespace(data=str(DEFAULT_DATA), fold="all", seed_fold=1,
+                                       post_softmax=False, relative_top=0.0, relative_top_value=-1000.0,
+                                       model="stub", tag="stub", save_choice_arms=[])
+    out_stub = assemble_output(stub_args, [rec, rec], stub_arms, m.cfg.n_layers, [(0, 2)],
+                               {"a": {0}, "b": {1}}, 0, 0, [10, 11], 4,
+                               {"ok": True}, {"n": 2}, 1.0)
+    try:
+        _txt = json.dumps(out_stub, ensure_ascii=False)
+        ser_ok = len(_txt) > 0 and out_stub["data"]["fold_ids"]["a"] == [0]
+    except TypeError:
+        ser_ok = False
     checks = [
+        ("产物可 JSON 序列化（fold_ids 为 set 时亦须通过）", ser_ok,
+         out_stub["data"]["fold_ids"], {"a": [0], "b": [1]}),
+        ("端到端逐题聚合（MC 三指标 + 选层记录）", agg_ok, list(rec["mc"]), ["baseline", "dyn"]),
         ("baseline 位置切片", abs(res["baseline"]["score"] - ref_base) < 1e-5, res["baseline"]["score"], ref_base),
         ("depth0→blocks.0.hook_resid_pre", abs(res["s0"]["score"] - ref_s0) < 1e-5, res["s0"]["score"], ref_s0),
         ("depth2→blocks.1.hook_resid_post", abs(res["s2"]["score"] - ref_s2) < 1e-5, res["s2"]["score"], ref_s2),
@@ -1278,6 +1340,11 @@ def judge(args):
     fold_ids = d["data"].get("fold_ids")
     if fold_ids is None or (len(fold_ids["a"]) == 0 or len(fold_ids["b"]) == 0):
         raise SystemExit("该结果 JSON 未覆盖两折（--fold all 才会写 fold_ids）⇒ 无法做两折互选")
+    have = {r["qid"] for r in per_q}
+    missing = [q for q in list(fold_ids["a"]) + list(fold_ids["b"]) if q not in have]
+    if missing:
+        raise SystemExit(f"结果 JSON 的两折覆盖不全（缺 {len(missing)} 题，例如 {missing[:5]}）"
+                         f"⇒ 该文件是以 --fold a/b 跑出的，不能用于两折互选；请以 --fold all 重跑")
 
     def mc2_on(arm, ids):
         vals = [r["mc"][arm]["MC2"] for r in per_q if r["qid"] in ids]
