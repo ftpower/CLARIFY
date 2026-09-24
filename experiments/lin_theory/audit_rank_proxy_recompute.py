@@ -138,6 +138,17 @@ def selftest(model_id: str = "Qwen/Qwen3-1.7B") -> int:
         and assign(1, True, 50) == "know_correct" and assign(-1, True, 50) == "invalid"
     checks += 1  # 子集划分边界
 
+    # lens 路径形状：h_L 是 [1, d]（extract_h_at_layer 已取末位置）⇒ 输出 [1, V]，取 [0] 得 [V]
+    import torch.nn as nn
+    d, V = 8, 5
+    ln_f = nn.LayerNorm(d).half()
+    W_U = torch.randn(d, V, dtype=torch.float16)
+    h = torch.randn(1, d, dtype=torch.float16)
+    out = compute_early_exit_logits(h, ln_f, W_U, None)
+    assert out.shape == (1, V), out.shape
+    assert out[0].shape == (V,) and get_rank(out[0], 0) >= 1
+    checks += 1  # lens logits 形状与 rank 可用
+
     print(f"selftest PASS {checks}/{checks}")
     return checks
 
@@ -175,8 +186,8 @@ def main():
     for i, s in enumerate(tqdm(samples, desc="recompute")):
         prompt = format_prompt(s["question"], s["context"], dataset="triviaqa")
         h_L, logits, _, _ = extract_h_at_layer(model, tokenizer, prompt, device, args.layer_early)
-        lf = logits[0, -1, :]
-        lens_lf = compute_early_exit_logits(h_L, ln_final, W_U, b_U)[0, -1, :]
+        lf = logits[0, -1, :]                      # [vocab] 真实末层 logits
+        lens_lf = compute_early_exit_logits(h_L, ln_final, W_U, b_U)[0]  # [vocab] ℓ* lens（h_L 已是 [1,d]）
 
         cands = alias_candidates(tokenizer, s["answers"])
         if not cands:
