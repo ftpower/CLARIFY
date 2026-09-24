@@ -324,6 +324,12 @@ def build_arm_scores(
     Returns:
         {name: {"score": float, "selected_layers": [depth,...], "jsd": {depth: [float,...]}}}
     """
+    # 防御：诊断条件名不得作为 arm 传入——否则 `_key(name, post_softmax)` 会与原键同名而互相覆盖，
+    # 使诊断组静默变成主条件的重复值（2026-09-24 全量首跑踩过）。此处**显式报错**，不静默容忍。
+    _bad = [n for n, _ in arms if n.endswith("__ps0") or n.endswith("__ps1")]
+    if _bad:
+        raise ValueError(f"arm 名不得以 __ps0/__ps1 结尾（会与 ps_variants 生成的键名冲突）：{_bad}；"
+                         f"诊断条件请通过 ps_variants 触发")
     n_pos = int(cont_ids.shape[0])
     idx = torch.arange(n_pos, device=cont_ids.device)
     out = {}
@@ -609,12 +615,18 @@ def run(args):
     # 起因：官方 MC 口径（post_softmax=False）下对比分数不归一，早期层分布弥散时 MC2 会饱和；
     # 官方论文 Table 6 亦做过该对照（7B：无 post-softmax 63.8 vs 有 52.2）。**主判据条件不受影响**。
     ps_variants = [not args.post_softmax] if args.post_softmax_diag else []
+    # ⚠️ 诊断条件**不得**加入 arms：build_arm_scores 会按 `_key(name, ps)` 生成键名，
+    # 若 arms 里同时存在 "X" 与 "X__ps1"，后者的 ps=False 分支会覆盖前者 ⇒ 两者变成重复值
+    # （2026-09-24 全量首跑踩过：817/817 逐题相同）。故 arms 只保留主判据条件，
+    # 诊断条件仅由 ps_variants 触发生成；记录时再按名字取用。
+    ps_record_arms = ([(f"{n}__ps{int(ps_variants[0])}", spec) for n, spec in arms] if ps_variants else [])
     if ps_variants:
-        arms = arms + [(f"{n}__ps{int(ps_variants[0])}", spec) for n, spec in arms]
-        print(f"  [诊断] 追加 post_softmax={ps_variants[0]} 的条件组（{len(arms)} 个条件，投影/JSD 复用，主判据不变）")
+        print(f"  [诊断] 追加 post_softmax={ps_variants[0]} 的条件组（{len(ps_record_arms)} 个诊断条件，"
+              f"投影/JSD 复用，主判据不变）")
     print(f"  buckets={buckets}")
     print(f"  candidates={candidates_in_bucket(0, n_layers, n_layers)}")
-    print(f"  arms={[a for a, _ in arms]}")
+    print(f"  arms={[a for a, _ in arms]}"
+          + (f"\n  [诊断] {[a for a, _ in ps_record_arms]}" if ps_record_arms else ""))
 
     per_q, lens_k, lens_n = [], 0, 0
     n_choices = 0
@@ -677,7 +689,7 @@ def run(args):
             print(f"  ⚠️ 第 {qi} 题出现空续写（跳过并计入 bad_questions）")
             continue
 
-        rec, _, _, _ = build_question_record(qi, q, cache, arms, args.save_choice_arms)
+        rec, _, _, _ = build_question_record(qi, q, cache, arms + ps_record_arms, args.save_choice_arms)
         rec["_lens_k"] = lens_k - _lk0
         rec["_lens_n"] = lens_n - _ln0
         rec["_n_choices"] = n_choices - _nc0
@@ -1146,6 +1158,13 @@ def selftest_stub():
         ser_ok = False
     ps_keys_ok = all(f"{n}__ps1" in res for n in ("s0", "s2", "dyn"))
     ps_differs = any(abs(res[f"{n}__ps1"]["score"] - res[n]["score"]) > 1e-6 for n in ("s0", "s2", "dyn"))
+    # 键名冲突回归守卫：把诊断名也塞进 arms 时必须仍然不同（历史上会互相覆盖变成重复值）
+    arms_dup = arms + [(f"{n}__ps1", sp) for n, sp in arms]
+    try:
+        score_choice(m, prompt, cont, arms_dup, [0, 2, n_layers], lens_check=False, ps_variants=[True])
+        ps_no_collide = False           # 未报错 ⇒ 存在静默覆盖风险
+    except ValueError:
+        ps_no_collide = True            # 显式拒绝 ⇒ 该误用不可能再发生
     # 断点续跑：写入 → 读回 → 指纹校验 → 定稿（覆盖"中断丢结果"的教训）
     import tempfile
     from pathlib import Path as _P
@@ -1176,6 +1195,7 @@ def selftest_stub():
     checks = [
         ("断点续跑（截断行容忍 + 私有字段分离 + 指纹不符拒绝）", rt_ok and mismatch_blocked,
          [len(clean_b), agg_b["lens_k"], mismatch_blocked], [1, 1, True]),
+        ("诊断条件不得与主条件重复（键名冲突回归守卫）", ps_no_collide, "见上", "主/诊断分数应不同"),
         ("post_softmax 诊断条件（键名齐备且数值与主条件不同）", ps_keys_ok and ps_differs,
          sorted(k for k in res if k.endswith("__ps1")), ["dyn__ps1", "s0__ps1", "s2__ps1"]),
         ("产物可 JSON 序列化（fold_ids 为 set 时亦须通过）", ser_ok,
@@ -1527,7 +1547,7 @@ def judge(args):
     path = Path(args.judge)
     d = json.load(open(path, encoding="utf-8"))
     per_q = d["per_question"]
-    dyn_arms = [a for a in d["summary"].keys() if a.startswith("dyn_b")]
+    dyn_arms = [a for a in d["summary"].keys() if a.startswith("dyn_b") and "__ps" not in a]
     baseline_mc2 = d["summary"]["baseline"]["MC2"]
 
     fold_ids = d["data"].get("fold_ids")
@@ -1560,6 +1580,26 @@ def judge(args):
     lines.append(f"- 全量 MC2：A 折 {base_a:.4f}、B 折 {base_b:.4f}\n")
 
     results = {}
+    by_qid = {r["qid"]: r for r in per_q}
+
+    def _paired(arm, rep_fold):
+        """报告折上的逐题配对统计（改善/恶化/持平 + Wilcoxon 符号秩）。"""
+        ids = sorted(fold_ids[rep_fold])
+        dlt = np.array([by_qid[i]["mc"][arm]["MC2"] - by_qid[i]["mc"]["baseline"]["MC2"] for i in ids])
+        imp = int((dlt > 1e-12).sum())
+        wor = int((dlt < -1e-12).sum())
+        pval = None
+        try:
+            from scipy.stats import wilcoxon
+
+            nz = dlt[np.abs(dlt) > 1e-12]
+            if len(nz) >= 10:
+                pval = float(wilcoxon(nz, zero_method="wilcox").pvalue)
+        except Exception:
+            pass
+        return {"improved": imp, "worsened": wor, "tied": len(ids) - imp - wor,
+                "wilcoxon_p": pval, "n": len(ids)}
+
     for direction, (sel_fold, rep_fold) in {
         "A→B": ("a", "b"), "B→A": ("b", "a")}.items():
         scores = {a: mc2_on(a, fold_ids[sel_fold]) for a in dyn_arms}
@@ -1573,12 +1613,43 @@ def judge(args):
             "report_MC3": mc_on(best, "MC3", fold_ids[rep_fold]),
             "baseline_MC2_on_report_fold": mc2_on("baseline", fold_ids[rep_fold]),
             "delta_MC2_points": delta,
+            "per_question_paired": _paired(best, rep_fold),
         }
         lines.append(f"## 方向 {direction}（选桶用 {sel_fold.upper()} 折，报告用 {rep_fold.upper()} 折）")
         lines.append(f"- 选桶折 MC2：{ {a: round(v, 4) for a, v in scores.items()} } ⇒ 选中 **{best}**")
         lines.append(f"- 报告折：MC1={results[direction]['report_MC1']:.4f}、MC2={results[direction]['report_MC2']:.4f}、"
                      f"MC3={results[direction]['report_MC3']:.4f}；baseline MC2={results[direction]['baseline_MC2_on_report_fold']:.4f}")
-        lines.append(f"- **Δ(MC2) = {delta:+.2f} 点**\n")
+        pq = results[direction]["per_question_paired"]
+        lines.append(f"- **Δ(MC2) = {delta:+.2f} 点**；逐题配对：改善 {pq['improved']}／恶化 {pq['worsened']}／"
+                     f"持平 {pq['tied']}（n={pq['n']}）"
+                     + (f"，Wilcoxon 符号秩 p={pq['wilcoxon_p']:.3g}" if pq["wilcoxon_p"] is not None else "")
+                     + "\n")
+
+    # ── 事后追加的稳健性诊断：post_softmax 取反条件（不改动主判据）──────────────
+    ps_arms = sorted({a for a in per_q[0]["mc"] if "__ps" in a})
+    ps_block = None
+    if ps_arms:
+        dup = [a for a in ps_arms
+               if a.replace("__ps1", "") in per_q[0]["mc"]
+               and all(r["mc"][a] == r["mc"][a.replace("__ps1", "")] for r in per_q)]
+        if dup:
+            ps_block = {"invalid": dup,
+                        "note": "诊断组与主条件逐题相同 ⇒ 键名冲突缺陷产物，不得使用（需以修正版重跑）"}
+        else:
+            rows = {}
+            for a in [x for x in ps_arms if x.startswith("dyn_b")]:
+                m = a.replace("__ps1", "")
+                rows[a] = {"MC2": float(np.mean([r["mc"][a]["MC2"] for r in per_q])),
+                           "MC1": float(np.mean([r["mc"][a]["MC1"] for r in per_q])),
+                           "MC3": float(np.mean([r["mc"][a]["MC3"] for r in per_q])),
+                           "delta_MC2_vs_main_baseline":
+                               float(np.mean([r["mc"][a]["MC2"] - r["mc"]["baseline__ps1"]["MC2"]
+                                              for r in per_q]) * 100) if "baseline__ps1" in per_q[0]["mc"] else None,
+                           "main_arm": m, "main_arm_MC2": float(np.mean([r["mc"][m]["MC2"] for r in per_q]))}
+            ps_block = {"rows": rows,
+                        "note": "事后追加的稳健性诊断（post_softmax 取反）：因官方 MC 口径不归一化、"
+                                "MC2 会向 0/1 饱和，此块用于说明增益幅度不是该归一化缺失的伪影；"
+                                "**不参与主判据**"}
 
     deltas = [r["delta_MC2_points"] for r in results.values()]
     mean_delta = float(np.mean(deltas))
@@ -1599,11 +1670,23 @@ def judge(args):
     lines.append(f"- 必须并列披露：模型族不同（Qwen3）、无 OE 指标（A7）、"
                  f"baseline MC2 余量、以及 H_C（层间分化）见 JSD 诊断脚本输出\n")
 
+    if ps_block:
+        lines.append("\n## 事后追加的稳健性诊断（post_softmax 取反；不参与主判据）")
+        if ps_block.get("invalid"):
+            lines.append(f"- ⚠️ 该诊断组无效：{[a for a in ps_block['invalid']]}（{ps_block['note']}）")
+        else:
+            for a, r in ps_block["rows"].items():
+                lines.append(f"- `{a}`：MC1={r['MC1']:.4f} MC2={r['MC2']:.4f} MC3={r['MC3']:.4f}；"
+                             f"对应主条件 MC2={r['main_arm_MC2']:.4f}"
+                             + (f"；ΔMC2(vs 同变体 baseline)={r['delta_MC2_vs_main_baseline']:+.2f}pp"
+                                if r["delta_MC2_vs_main_baseline"] is not None else ""))
+            lines.append(f"- {ps_block['note']}")
+
     out_md = path.with_name(f"judge_{path.stem}.md")
     out_json = path.with_name(f"judge_{path.stem}.json")
     out_md.write_text("\n".join(lines), encoding="utf-8")
     json.dump({"source": str(path), "directions": results, "mean_delta_MC2": mean_delta,
-               "bootstrap": boot, "verdict": verdict},
+               "bootstrap": boot, "verdict": verdict, "post_softmax_diagnostic": ps_block},
               open(out_json, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     print("\n".join(lines))
     print(f"Saved → {out_md}\nSaved → {out_json}")
