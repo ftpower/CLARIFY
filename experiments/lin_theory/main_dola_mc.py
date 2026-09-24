@@ -781,24 +781,42 @@ def _zero_contrast_check(model, questions, post_softmax=False):
 
 
 @torch.no_grad()
-def _position_align_check(model, questions, tol=2e-3):
-    """M5：用"逐步加长前缀"独立复算续写位置 logits（校验 [prefix-1, full-1) 切片）。
+def _position_align_check(model, questions, ratio_thr=0.2):
+    """M5：用"逐步加长前缀"独立复算续写位置 logits（校验 `[prefix-1, full-1)` 切片）。
 
     做法：对同一 (prompt, cont)，逐 token 前向 `full_ids[:, :p+1]` 取末位 logits，与一次性前向的
-    `logits[:, p]` 对比；KV cache 路径下应逐位一致（fp16 容差）。
+    `logits[:, p]` 对比。
+
+    **判据为标度无关量**（原判据"绝对容差 2e-3"不成立：fp16 在对数幅度约 32 处单个 ULP 即 0.0156，
+    任何 fp16 实现都无法满足；2026-09-24 首次执行实测 0.0469 = 3 ULP ⇒ 判据设定有误，已改）：
+      · `same_max`＝同位置两条路径的最大绝对偏差（应仅为不同矩阵乘形状带来的舍入差）；
+      · `cross_min`＝**相邻位置**之间 logits 最大绝对差的下确界（"切片取错位置"时的典型量级；
+        相邻位置最相似 ⇒ 这是最严格的可判别对照）；
+      · 通过条件：`same_max < ratio_thr × cross_min` **且** 逐位置 argmax 完全一致。
     """
     q = questions[0]
     ans = q["correct"][0]
     prompt, cont = build_prompt_and_answer(q["question"], ans)
     _, full_ids, cont_ids, prefix_len = encode_pair(model, prompt, cont)
     logits_full = model(full_ids)
-    worst = 0.0
-    for p in range(prefix_len - 1, full_ids.shape[1] - 1):
+    positions = list(range(prefix_len - 1, full_ids.shape[1] - 1))
+    same, agree = 0.0, 0
+    for p in positions:
         lg = model(full_ids[:, : p + 1])
         d = float((lg[0, -1, :].float() - logits_full[0, p, :].float()).abs().max().item())
-        worst = max(worst, d)
-    return {"ok": bool(worst <= tol), "max_abs_diff": worst, "tol": tol,
-            "n_pos": int(cont_ids.shape[0])}
+        same = max(same, d)
+        agree += int(int(lg[0, -1, :].argmax()) == int(logits_full[0, p, :].argmax()))
+    cross = float("inf")
+    for i in range(len(positions) - 1):
+        p, pn = positions[i], positions[i + 1]
+        d = float((logits_full[0, p, :].float() - logits_full[0, pn, :].float()).abs().max().item())
+        cross = min(cross, d)
+    ratio = same / cross if cross > 0 else float("inf")
+    ok = bool(ratio < ratio_thr and agree == len(positions))
+    return {"ok": ok, "same_max_abs_diff": same, "cross_min_abs_diff": cross,
+            "ratio": ratio, "ratio_threshold": ratio_thr,
+            "argmax_agree": f"{agree}/{len(positions)}", "n_pos": int(cont_ids.shape[0]),
+            "note": "原绝对容差 2e-3 在 fp16 下不可达（2026-09-24 实测 0.0469＝3 ULP）⇒ 改为标度无关判据"}
 
 
 @torch.no_grad()
@@ -979,8 +997,10 @@ def selftest_model(args):
           f"MC2={res['M2_zero_contrast']['MC2']:.4f}(期望 {res['M2_zero_contrast']['expected_MC2']:.4f})")
 
     res["M5_position_align"] = _position_align_check(model, questions)
-    print(f"  [M5] 位置对齐 ok={res['M5_position_align']['ok']} "
-          f"max|Δlogits|={res['M5_position_align']['max_abs_diff']:.3g}")
+    m5 = res["M5_position_align"]
+    print(f"  [M5] 位置对齐 ok={m5['ok']} 同位置偏差={m5['same_max_abs_diff']:.4g} vs "
+          f"相邻位置偏差下确界={m5['cross_min_abs_diff']:.4g}（比值 {m5['ratio']:.4g} < {m5['ratio_threshold']}）"
+          f"，argmax 一致 {m5['argmax_agree']}")
 
     # M3 lens：用若干题统计 argmax 一致率
     arms = [("baseline", ("baseline",))]
@@ -1003,12 +1023,23 @@ def selftest_model(args):
         res["M1_hf_parity"] = {"ok": None, "skipped": True}
         print("  [M1] 已跳过（--parity_n 0）")
 
-    allok = all(v.get("ok") is not False for v in res.values())
-    print(f"\n  S0 model 组判定：{'PASS ✅' if allok else 'FAIL ❌'}")
     out_dir = Path(args.output_dir) if args.output_dir else (
         Path(__file__).resolve().parent.parent / "outputs" / "dola_mc_repro")
     out_dir.mkdir(parents=True, exist_ok=True)
     p = out_dir / f"selftest_model_{args.model.split('/')[-1]}.json"
+    # 跳过项沿用上一次执行的结果（例如以 --parity_n 0 复跑 M5 时不清空已通过的 M1 记录）
+    if p.exists():
+        try:
+            prev = json.load(open(p, encoding="utf-8")).get("results", {})
+            for k, v in res.items():
+                if v.get("skipped") and isinstance(prev.get(k), dict) and prev[k].get("ok") is not None:
+                    carried = dict(prev[k])
+                    carried["carried_over_from_previous_run"] = True
+                    res[k] = carried
+        except Exception as e:
+            print(f"  ⚠️ 读取既有自检记录失败（忽略）：{e}")
+    allok = all(v.get("ok") is not False for v in res.values())
+    print(f"\n  S0 model 组判定：{'PASS ✅' if allok else 'FAIL ❌'}")
     json.dump({"model": args.model, "device": device, "results": res, "all_pass": allok},
               open(p, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
     print(f"  Saved → {p}")
