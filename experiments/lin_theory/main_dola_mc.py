@@ -1,9 +1,9 @@
 """DoLa 原生域复现（TruthfulQA-MC 似然打分口径）—— 主脚本 + 离线等价自检。
 
-定位：**诊断实验**，不是救场实验。目的是把"我们复现不出 DoLa"拆成三个可判定假说：
+定位：**诊断实验**，其目标不在于取得正向干预效果。目的是将"本项目未能复现 DoLa"分解为三个可判定的假说：
   H_A 实现有误 / H_B 域不迁移 / H_C 本族（规模）失效。
-方案、预注册判据、协议对齐清单、红线：`docs/protocol/dola-native-reproduction-20260924.md` §1–§7
-（**判据跑前写死，跑后不得改**；本文件只实现，不解释结论）。
+方案、事前设定的判据、协议对齐清单、禁止事项：`docs/protocol/dola-native-reproduction-20260924.md` §1–§7
+（**判据在事前固定，执行后不得修改**；本文件只实现，不解释结论）。
 
 与本项目其余脚本的关系
 ----------------------
@@ -18,8 +18,8 @@
      ⇒ 本脚本默认 `--post_softmax` 关闭（diff logits 不做第二次 log_softmax）。
   A2 官方 `tfqa_mc_eval.py` L237 `--relative_top` 默认 **0.0**，README 的 MC 命令**未传该参数**
      ⇒ **官方 MC 口径下 APC（含 −1000 截断）根本不生效**（`dola.py` L213 `if relative_top > 0.0`）。
-     本脚本默认 `--relative_top 0.0`（对齐官方命令行）；APC 开臂用 `--relative_top 0.1
-     --relative_top_value -1000.0`（论文 App. C 的 −1000 变体），作为预注册的 APC 消融。
+     本脚本默认 `--relative_top 0.0`（对齐官方命令行）；启用 APC 时用 `--relative_top 0.1
+     --relative_top_value -1000.0`（论文 App. C 的 −1000 变体），作为事前设定的 APC 消融条件。
      ⚠️ 本脚本不采用 `main_dola_baseline.py` 的 `_apc_mask`（那是按**概率** α·max 判的论文式 APC），
      因为官方 MC 路径走的是 `get_relative_top_filter`（**对已 log_softmax 的 final_logits 再做一次
      log_softmax** —— 双重 log_softmax 是官方原样行为，本脚本逐字保留，见 `official_relative_top_mask`）。
@@ -32,7 +32,7 @@
   A6 成熟层项取**模型真实 logits**（数值纪律：2026-08-25 lens 重算伪影教训）；lens 只用于自检。
   A7 生成侧 rp=1.2 / OE 的 GPT-3 评分：**本方案不做**（MC 打分无采样、无 rp；无 API ⇒ OE 缺口显式登记）。
 
-S0 门禁自检（方案 §4.3，全过才进 S1/S2）
+S0 前置校验（方案 §4.3，全过才进 S1/S2）
 ----------------------------------------
   `--selftest offline`（零 GPU、秒级）：
     O1 逐字移植等价性——从 `reference_code/DoLa/tfqa_mc_eval.py` **抽取官方函数源码**执行，与本文件
@@ -48,19 +48,19 @@ S0 门禁自检（方案 §4.3，全过才进 S1/S2）
 
 用法
 ----
-    # S0 门禁（零 GPU，agent 侧即可跑）
+    # S0 前置校验（零 GPU，无需模型，可直接执行）
     python3 experiments/lin_theory/main_dola_mc.py --selftest offline
 
-    # S0 门禁（本地 1.7B，含 HF 一致性；HF 副本按 fp32 CPU 加载 ⇒ 约 7GB 内存）
+    # S0 前置校验（本地 1.7B，含与 HF 实现的一致性核对；HF 参考模型按 fp32/CPU 加载 ⇒ 约需 7GB 内存）
     python3 experiments/lin_theory/main_dola_mc.py --selftest model --model Qwen/Qwen3-1.7B
 
-    # S1 前置：JSD 分化预分析（判停点）
+    # S1 前置：JSD 分化预分析（终止判定点）
     python3 experiments/lin_theory/diagnose_dola_jsd_layers.py --model Qwen/Qwen3-1.7B --n_questions 100
 
-    # S2 主跑（一次性算出 baseline + 各 bucket 动态 + 各静态层，单次前向复用）
+    # S2 正式执行（一次性算出 baseline + 各 bucket 动态 + 各静态层，单次前向复用）
     python3 experiments/lin_theory/main_dola_mc.py --model Qwen/Qwen3-1.7B --fold all
 
-    # 判读（零 GPU，两折互选 bucket + 预注册三分支）
+    # 判读（零 GPU，两折互选 bucket + 事前设定的三分支判定）
     python3 experiments/lin_theory/main_dola_mc.py --judge experiments/outputs/dola_mc_repro/dola_mc_....
 
     服务器 8B（硬性命令格式见 CLAUDE.md：`unset HF_ENDPOINT && HF_HOME=... python -u \`，每参数一行）
@@ -316,7 +316,7 @@ def build_arm_scores(
     relative_top=0.0,
     relative_top_value=-1000.0,
 ):
-    """纯算子：给定成熟层 logits 与"深度→早层 logits"的投影函数，算各臂的续写对数分。
+    """纯算子：给定成熟层 logits 与"深度→早层 logits"的投影函数，计算各实验条件的续写对数似然。
 
     Args:
         mature_logits: [n_pos, V] 成熟层**真实** logits（A6）
@@ -337,7 +337,7 @@ def build_arm_scores(
     mature_logsm = F.log_softmax(mature_logits.float(), dim=-1)
     jsd_table = {}
 
-    # 第一遍：逐候选层算 JSD（dynamic 选层用）+ 顺带把 static 臂在**同一次投影**上算掉
+    # 第一遍：逐候选层算 JSD（dynamic 选层用）+ 同时在同一投影结果上计算 static 条件
     for name, spec in arms:
         if spec[0] == "baseline":
             out[name] = {"score": float(mature_logsm[idx, cont_ids].sum().item()),
@@ -357,7 +357,7 @@ def build_arm_scores(
                 out[name] = {"score": float(diff[idx, cont_ids].sum().item()),
                              "selected_layers": [int(d)], "jsd": {}}
 
-    # 第二遍：dynamic 臂——逐位置在桶内 argmax JSD，再用被选层的 log 差
+    # 第二遍：dynamic 条件——逐位置在桶内 argmax JSD，再用被选层的 log 差
     for name, spec in arms:
         if spec[0] != "dynamic":
             continue
@@ -469,7 +469,7 @@ def encode_pair(model, prompt, cont_text, max_ctx=0):
 @torch.no_grad()
 def score_choice(model, prompt, cont_text, arms, depths, post_softmax=False,
                  relative_top=0.0, relative_top_value=-1000.0, max_ctx=0, lens_check=True):
-    """一次前向 → 全部臂的续写对数分。
+    """一次前向 → 全部实验条件的续写对数似然。
 
     前向只做一次：hook 出候选早层在**续写位置**的残差（[n_pos, d_model]，极小），
     成熟层用真实 logits；投影在 `project_fn` 里按需做（避免缓存 14×[n_pos, V] 显存）。
@@ -673,7 +673,7 @@ def run(args):
             "post_softmax_note": "A1: 官方 tfqa_mc_eval.py L302 传 post_softmax=False",
             "apc": {"relative_top": args.relative_top, "relative_top_value": args.relative_top_value,
                     "note": "A2: 官方 MC 命令行未传 --relative_top ⇒ 默认 0.0 ⇒ APC 不生效；"
-                            "开臂即论文 App.C 的 -1000 变体（注意官方 get_relative_top_filter 是双重 log_softmax）"},
+                            "启用该条件即论文附录 C 的 −1000 变体（注意官方 get_relative_top_filter 是双重 log_softmax）"},
             "mature_term": "模型真实 logits（A6，非 lens 重算）",
             "candidates": candidates_in_bucket(0, n_layers, n_layers),
             "buckets": buckets,
@@ -708,7 +708,7 @@ def run(args):
 
 
 def split_folds(n, seed_fold):
-    """预注册两折：随机对折（seed 固定）。返回下标集合 a/b。"""
+    """事前设定的两折划分：随机对折（seed 固定）。返回下标集合 a/b。"""
     rng = random.Random(seed_fold)
     idx = list(range(n))
     rng.shuffle(idx)
@@ -851,7 +851,7 @@ def _hf_parity_check(model, args, questions, n=5, tol=None):
 
 
 def _stub_model(n_layers=4, d_model=8, vocab=32, seed=0):
-    """最小 HookedTransformer 替身：零 GPU 冒烟 `score_choice` 的管线（hook 名/位置切片/对齐）。
+    """最小 HookedTransformer 替身：零 GPU 小样本试运行 `score_choice` 的管线（hook 名/位置切片/对齐）。
 
     只实现打分路径用到的东西：cfg.n_layers/d_model、to_tokens、unembed.W_U、ln_final、run_with_hooks。
     层变换取确定性 `h + 0.1·tanh(h)`（不是真注意力，只用于验证管线而非数值语义）。
@@ -944,7 +944,7 @@ def selftest_stub():
         print(f"  [S] {name}: {'PASS' if ok else 'FAIL'}（got {got} vs 期望 {exp}）")
         if not ok:
             fails.append(name)
-    print(f"\n  总判：{'PASS ✅' if not fails else 'FAIL ❌ ' + str(fails)}")
+    print(f"\n  判定结论：{'PASS ✅' if not fails else 'FAIL ❌ ' + str(fails)}")
     if fails:
         raise SystemExit(2)
 
@@ -954,7 +954,7 @@ def selftest_model(args):
 
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     print("=" * 78)
-    print(f"S0 门禁自检（model 组）｜model={args.model} device={device}")
+    print(f"S0 前置校验（model 组）｜model={args.model} device={device}")
     print("=" * 78)
     model, tokenizer, _, _, _ = load_model_and_unembed(device, args.model)
     questions = load_questions(args.data, max(args.parity_n, 10), args.seed_subset)
@@ -1004,7 +1004,7 @@ def selftest_model(args):
         print("  [M1] 已跳过（--parity_n 0）")
 
     allok = all(v.get("ok") is not False for v in res.values())
-    print(f"\n  S0 model 组总判：{'PASS ✅' if allok else 'FAIL ❌'}")
+    print(f"\n  S0 model 组判定：{'PASS ✅' if allok else 'FAIL ❌'}")
     out_dir = Path(args.output_dir) if args.output_dir else (
         Path(__file__).resolve().parent.parent / "outputs" / "dola_mc_repro")
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1104,7 +1104,7 @@ def _official_reference_score(mature_logits, pre_logits_list, cont_ids, mode,
 
 def selftest_offline(args):
     print("=" * 78)
-    print("S0 门禁自检（offline 组：零 GPU，官方源码逐字等价性）")
+    print("S0 前置校验（offline 组：零 GPU，官方源码逐字等价性）")
     print("=" * 78)
     failures = []
 
@@ -1229,12 +1229,12 @@ def selftest_offline(args):
     if not ok_js:
         failures.append("O2:jsd_identities")
 
-    print(f"\n  S0 offline 组总判：{'PASS ✅' if not failures else 'FAIL ❌ ' + str(failures)}")
+    print(f"\n  S0 offline 组判定：{'PASS ✅' if not failures else 'FAIL ❌ ' + str(failures)}")
     if failures:
         raise SystemExit(2)
 
 
-# ── 判读（零 GPU：两折互选 bucket + 预注册三分支）──────────────────────────────
+# ── 判读（零 GPU：两折互选 bucket + 事前设定的三分支判定）──────────────────────────────
 
 
 def judge(args):
@@ -1265,7 +1265,7 @@ def judge(args):
                  f"（官方 MC 命令行 0.0 ⇒ 关闭）；post_softmax={d['protocol']['post_softmax']}")
     lines.append(f"- baseline MC1/2/3 = {d['summary']['baseline']['MC1']:.4f} / "
                  f"{d['summary']['baseline']['MC2']:.4f} / {d['summary']['baseline']['MC3']:.4f}"
-                 f"（余量披露：MC2 天花板 1.0）")
+                 f"（余量披露：MC2 上界 1.0）")
     lines.append(f"- 全量 MC2：A 折 {base_a:.4f}、B 折 {base_b:.4f}\n")
 
     results = {}
@@ -1292,17 +1292,17 @@ def judge(args):
     deltas = [r["delta_MC2_points"] for r in results.values()]
     mean_delta = float(np.mean(deltas))
     boot = bootstrap_delta_ci(per_q, results, fold_ids)
-    # 边界按预注册字面处理（浮点保护 1e-9）：成功 Δ≥+10.0｜灰区 +3.0<Δ<+10.0｜失败 Δ≤+3.0
+    # 边界按事前设定字面处理（浮点保护 1e-9）：成功 Δ≥+10.0｜不确定区间 +3.0<Δ<+10.0｜失败 Δ≤+3.0
     if mean_delta >= 10.0 - 1e-9:
         verdict = "复现成功（Δ≥+10）"
     elif mean_delta > 3.0 + 1e-9:
-        verdict = "灰区（+3<Δ<+10）⇒ 报数不判"
+        verdict = "不确定区间（+3<Δ<+10）⇒ 报数不判"
     else:
         verdict = "复现失败（Δ≤+3）⇒ 先按 §4.3 自检与官方抽题对照排查 H_A"
-    lines.append("## 预注册主判据（MC2，两折均值）")
+    lines.append("## 事前设定的主判据（MC2，两折均值）")
     lines.append(f"- Δ(MC2) 两方向 = {deltas[0]:+.2f} / {deltas[1]:+.2f} ⇒ **均值 {mean_delta:+.2f} 点**"
                  f"（bootstrap 95% CI {boot['lo']:+.2f} ~ {boot['hi']:+.2f}，配对重采样 {boot['n_boot']} 次）")
-    lines.append(f"- 预注册判据：成功 ≥ +10.0｜灰区 +3.0 ~ +10.0｜失败 ≤ +3.0")
+    lines.append(f"- 事前设定的判据：成功 ≥ +10.0｜不确定区间 +3.0 ~ +10.0｜失败 ≤ +3.0")
     lines.append(f"- **判定：{verdict}**")
     lines.append(f"- 论文锚点（LLaMA 四档 ΔMC2 = +23.2 / +21.6 / +12.8 / +17.7）")
     lines.append(f"- 必须并列披露：模型族不同（Qwen3）、无 OE 指标（A7）、"
@@ -1353,17 +1353,17 @@ def main():
     ap.add_argument("--static_layers", type=str, default="even", help='"even" | "none" | "0,4,8"')
     ap.add_argument("--post_softmax", action="store_true", help="官方 MC 口径为 False（A1），默认不加")
     ap.add_argument("--relative_top", type=float, default=0.0,
-                    help="官方 MC 命令行默认 0.0（APC 关闭，A2）；0.1 = 论文 α 开臂")
+                    help="官方 MC 命令行默认 0.0（APC 关闭，A2）；0.1 = 论文 α 取值（启用 APC）")
     ap.add_argument("--relative_top_value", type=float, default=-1000.0)
     ap.add_argument("--max_ctx", type=int, default=0, help="0 = 不截断（原生域协议）")
     ap.add_argument("--save_choice_arms", type=str, nargs="*", default=[],
-                    help="额外把哪些臂的逐选项分数写进 JSON（baseline 恒存）")
+                    help="额外把哪些实验条件的逐选项分数写入 JSON（baseline 恒存）")
     ap.add_argument("--tag", type=str, default=None)
     ap.add_argument("--output_dir", type=str, default=None)
     ap.add_argument("--selftest", type=str, default=None, choices=["offline", "stub", "model"])
     ap.add_argument("--parity_n", type=int, default=5, help="M1 用几题做 HF 一致性（0=跳过）")
     ap.add_argument("--parity_tol", type=float, default=5e-2,
-                    help="M1 容差（fp16 vs HF 直接前向；预注册 1e-3 在 fp16 下过紧，实测为准并披露）")
+                    help="M1 容差（fp16 vs HF 直接前向；事前设定的 1e-3 在 fp16 下过紧，实测为准并披露）")
     ap.add_argument("--parity_device", type=str, default="cpu")
     ap.add_argument("--parity_dtype", type=str, default="float32")
     ap.add_argument("--lens_min_agree", type=float, default=0.99)

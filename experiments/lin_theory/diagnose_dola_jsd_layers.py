@@ -1,11 +1,11 @@
-"""DoLa 图 2 式 JSD 分化预分析（S1 **判停点**）。
+"""DoLa 图 2 式 JSD 分化预分析（S1 **终止判定点**）。
 
 为什么先做这一步：I19 卡（DoLa, ICLR 2024, 已评审）明写——GPT2-Medium（335M）**全面失效**，
-作者归因"层间知识无分化"；并给出红线：**1.7B 级结果不得外推为"方法无效"**。
+作者归因"层间知识无分化"；并给出禁止事项：**1.7B 级结果不得外推为"方法无效"**。
 所以本脚本用论文图 2 的同一量（末层 vs 偶数早层的 JSD，逐位置）在**我们的模型**上先量分化程度，
 再决定是否值得进 S2（MC 评测）。方案：`docs/protocol/dola-native-reproduction-20260924.md` §5。
 
-预注册判停规则（写于跑之前，见方案 §5.1-G；三条件**全过**才算"分化存在"）
+事前设定的终止判定规则（写于执行之前，见方案 §5.1-G；三条件**全过**才算"分化存在"）
 --------------------------------------------------------------------------
 设 `m(d)` = 深度 d 的 JSD 均值（默认识别面 = **续写位置**，可用 `--verdict_on prompt` 换成题面位置），
 `anchor` = JSD(成熟层分布 ‖ 均匀分布) 的均值（"最大可能的层间差异"的标度参照），
@@ -16,11 +16,11 @@
   (iii) **绝对尺度**：max_d m(d) ≥ **0.05 × anchor**
 
   · 三条全过 ⇒ `分化存在` ⇒ 进 S2（MC 评测）
-  · 一条都不过 ⇒ `无分化（判停）` ⇒ **只报诊断、不进 S2**（红线：不得外推"方法无效"）
-  · 部分过 ⇒ `灰区` ⇒ 记录后仍可进 S2，但结论必须并列披露分化不足
+  · 一条都不过 ⇒ `无分化（终止判定）` ⇒ **只报诊断、不进 S2**（禁止事项：不得外推"方法无效"）
+  · 部分过 ⇒ `不确定区间` ⇒ 记录后仍可进 S2，但结论必须并列披露分化不足
 
 零 GPU 自检：`python3 experiments/lin_theory/diagnose_dola_jsd_layers.py --selftest`
-（bucket 规则、判停逻辑、锚点退化三项，秒级）
+（bucket 规则、终止判定逻辑、锚点退化三项，秒级）
 
 用法：
     # S1（本地 1.7B，约 10 分钟）
@@ -57,7 +57,7 @@ from main_dola_mc import (  # noqa: E402
     validate_questions,
 )
 
-# ── 预注册阈值（改动须同步方案 §5.1-G 并注明日期）──────────────────────────────
+# ── 事前设定的阈值（改动须同步方案 §5.1-G 并注明日期）──────────────────────────────
 THR_JSD_RATIO = 1.5
 THR_CHI2_P = 0.05
 THR_ANCHOR_FRAC = 0.05
@@ -78,7 +78,7 @@ def jsd_to_uniform(mature_logits):
 
 
 def verdict_from_stats(mean_by_depth, argmax_counts, anchor, profile="answer"):
-    """预注册判停规则（纯逻辑，可离线测）。"""
+    """事前设定的终止判定规则（纯逻辑，可离线测）。"""
     depths = sorted(mean_by_depth)
     vals = [mean_by_depth[d] for d in depths]
     lo, hi = min(vals), max(vals)
@@ -100,9 +100,9 @@ def verdict_from_stats(mean_by_depth, argmax_counts, anchor, profile="answer"):
     if n_pass == 3:
         verdict = "分化存在"
     elif n_pass == 0:
-        verdict = "无分化（判停）"
+        verdict = "无分化（终止判定）"
     else:
-        verdict = "灰区（分化不足，进 S2 但须并列披露）"
+        verdict = "不确定区间（分化不足，进 S2 但须并列披露）"
     return {"profile": profile, "max_mean_jsd": hi, "min_mean_jsd": lo, "ratio": ratio,
             "ratio_threshold": THR_JSD_RATIO, "c1_relative": bool(c1),
             "chi2_p": chi2_p, "chi2_p_threshold": THR_CHI2_P, "c2_nonuniform": bool(c2),
@@ -181,7 +181,7 @@ def run(args):
     depths = [d for d in range(0, n_layers, args.candidate_stride)]
     buckets = default_buckets(n_layers)
     print("=" * 78)
-    print("DoLa JSD 分化预分析（S1 判停点）")
+    print("DoLa JSD 分化预分析（S1 终止判定点）")
     print(f"  model={args.model} device={device} n_questions={len(questions)}")
     print(f"  n_layers={n_layers} mature_depth={n_layers} candidates={depths}")
     print(f"  buckets={buckets}（论文规则推广：nb=max(2,round(n_layers/20))）")
@@ -266,12 +266,12 @@ def run(args):
           f"（选层量＝官方 R 口径 argmax）")
     print(f"  (iii) 绝对尺度 max/anchor = {main_v['max_mean_jsd'] / max(1e-12, main_v['anchor_jsd_to_uniform']):.4f}"
           f" (≥{THR_ANCHOR_FRAC}) → {main_v['c3_absolute']}")
-    print(f"\n  ★ S1 判停：{main_v['verdict']}（{main_v['n_pass']}/3 条通过）")
+    print(f"\n  ★ S1 终止判定：{main_v['verdict']}（{main_v['n_pass']}/3 条通过）")
     print(f"    敏感性（若用严格 JSD 的 argmax 选层）："
           f"{stats[args.verdict_on]['verdict_sensitivity_true_jsd_selection']['verdict']}"
           f"（{stats[args.verdict_on]['verdict_sensitivity_true_jsd_selection']['n_pass']}/3）")
     if main_v["verdict"].startswith("无分化"):
-        print("  ⇒ 按红线**停在此步**：只报诊断，不进 S2，不得外推\"方法无效\"（I19 卡红线）")
+        print("  ⇒ 按禁止事项**停在此步**：只报诊断，不进 S2，不得外推\"方法无效\"（I19 卡禁止事项）")
 
     tag = args.tag or f"n{n_used}"
     model_tag = args.model.split("/")[-1]
@@ -287,9 +287,9 @@ def run(args):
     lines = [f"# DoLa JSD 分化预分析（{path.name}）\n",
              f"- model={args.model}，n_layers={n_layers}，mature_depth={n_layers}，题数={n_used}",
              f"- 候选早层（偶数含 0）={depths}；bucket={buckets}",
-             f"- 预注册阈值：ratio≥{THR_JSD_RATIO}、χ² p<{THR_CHI2_P}、max/anchor≥{THR_ANCHOR_FRAC}",
+             f"- 事前设定的阈值：ratio≥{THR_JSD_RATIO}、χ² p<{THR_CHI2_P}、max/anchor≥{THR_ANCHOR_FRAC}",
              f"- 主曲线＝**严格 JSD**；条件 (ii) 的选层计数用**官方 R 口径**（部署实际选层量）",
-             f"- **判停结论（主判面={args.verdict_on}）：{main_v['verdict']}（{main_v['n_pass']}/3）**\n",
+             f"- **终止判定结论（主判面={args.verdict_on}）：{main_v['verdict']}（{main_v['n_pass']}/3）**\n",
              "| depth | 严格 JSD ×1e5 (mean) | median | p10 | p90 | 官方 R ×1e5 | R 选层计数 | J 选层计数 |",
              "|---|---|---|---|---|---|---|---|"]
     for d in depths:
@@ -306,7 +306,7 @@ def run(args):
     print(f"\nSaved → {path}\nSaved → {md}")
 
 
-# ── 零 GPU 自检（判停逻辑 + bucket 规则）────────────────────────────────────────
+# ── 零 GPU 自检（终止判定逻辑 + bucket 规则）────────────────────────────────────────
 
 
 def selftest():
@@ -330,7 +330,7 @@ def selftest():
     if not ok:
         fails.append("candidates")
 
-    # 3) 判停逻辑：平坦 ⇒ 无分化；强分化 ⇒ 分化存在；部分 ⇒ 灰区
+    # 3) 终止判定逻辑：平坦 ⇒ 无分化；强分化 ⇒ 分化存在；部分 ⇒ 不确定区间
     flat = {d: 1.0e-3 for d in range(0, 14, 2)}
     flat_counts = {d: 100 for d in range(0, 14, 2)}
     v_flat = verdict_from_stats(flat, flat_counts, anchor=1.0)
@@ -350,7 +350,7 @@ def selftest():
     part = {d: 1.0e-5 for d in range(0, 14, 2)}
     part[0] = 3.0e-5
     v_part = verdict_from_stats(part, {d: 50 for d in range(0, 14, 2)}, anchor=0.01)
-    ok_part = v_part["verdict"].startswith("灰区")
+    ok_part = v_part["verdict"].startswith("不确定区间")
     print(f"  [3c] 部分通过谱 → {v_part['verdict']} {'PASS' if ok_part else 'FAIL'}（{v_part['n_pass']}/3）")
     if not ok_part:
         fails.append("verdict:partial")
@@ -372,13 +372,13 @@ def selftest():
     if not ok_a:
         fails.append("anchor")
 
-    print(f"\n  总判：{'PASS ✅' if not fails else 'FAIL ❌ ' + str(fails)}")
+    print(f"\n  判定结论：{'PASS ✅' if not fails else 'FAIL ❌ ' + str(fails)}")
     if fails:
         raise SystemExit(2)
 
 
 def main():
-    ap = argparse.ArgumentParser(description="DoLa 图 2 式 JSD 分化预分析（S1 判停点）")
+    ap = argparse.ArgumentParser(description="DoLa 图 2 式 JSD 分化预分析（S1 终止判定点）")
     ap.add_argument("--model", type=str, default="Qwen/Qwen3-1.7B")
     ap.add_argument("--data", type=str, default=str(DEFAULT_DATA))
     ap.add_argument("--device", type=str, default=None)
