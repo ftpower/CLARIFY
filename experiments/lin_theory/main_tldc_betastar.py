@@ -439,8 +439,16 @@ def judge(path, out_dir=None):
                 mm[ch][0] += int(s["persist_next"][j])
                 mm[ch][1] += 1
         if mm["min"][1] and mm["max"][1]:
-            fp = fisher_greater(mm["min"][0], mm["min"][1] - mm["min"][0],
-                                mm["max"][0], mm["max"][1] - mm["max"][0])
+            # H_frag 方向 = 「零边际比大边际更不粘」⇒ 单侧检验 max > min（fisher_greater 的第一组为较大率组）
+            fp = fisher_greater(mm["max"][0], mm["max"][1] - mm["max"][0],
+                                mm["min"][0], mm["min"][1] - mm["min"][0])
+            try:  # 另报双侧（scipy 存在时）
+                from scipy.stats import fisher_exact
+                _, fp2 = fisher_exact([[mm["max"][0], mm["max"][1] - mm["max"][0]],
+                                       [mm["min"][0], mm["min"][1] - mm["min"][0]]])
+                fp_two = float(fp2)
+            except Exception:
+                fp_two = None
             rmin, rmax = mm["min"][0] / mm["min"][1], mm["max"][0] / mm["max"][1]
             if fp < 0.05 and rmin < rmax:
                 hint = "H_frag 成立（零边际翻转更脆）"
@@ -448,20 +456,26 @@ def judge(path, out_dir=None):
                 hint = "H_frag 反向（零边际反而更粘）"
             else:
                 hint = "H_frag 未获支持（无显著差异）"
-            verdict["P2"] = {"min": mm["min"], "max": mm["max"], "fisher_p": fp, "branch": hint}
+            verdict["P2"] = {"min": mm["min"], "max": mm["max"], "fisher_p_dir_max_gt_min": fp,
+                             "fisher_p_two_sided": fp_two, "branch": hint}
             lines += ["\n## P2 机制判据（rand_strength 臂内随机化）\n",
                       f"- 零边际翻转：粘住 {mm['min'][0]}/{mm['min'][1]} = "
                       f"{mm['min'][0]/mm['min'][1]:.3f}",
                       f"- 大边际翻转：粘住 {mm['max'][0]}/{mm['max'][1]} = "
                       f"{mm['max'][0]/mm['max'][1]:.3f}",
-                      f"- Fisher 单侧 p={fp:.4f} ⇒ **{hint}**"]
+                      f"- Fisher 单侧（H_frag 方向：max > min）p={fp:.4f}"
+                      + (f"；双侧 p={fp_two:.4f}" if fp_two is not None else "")
+                      + f" ⇒ **{hint}**"]
     lines += ["\n## 前置门（§4）\n"]
     med = step.get(bs_key, {}).get("beta_min", {}) if bs_key else {}
     med = med.get("median") if med else None
     lines.append(f"- betastar 的 feasible 步 β*_min 中位数 = {med}；停止条件（<0.01 ⇒ 退化为几乎不扰动）："
                  f"{'⚠️ 触发' if (med is not None and med < 0.01) else '未触发'}")
     fx = label.get("fixed_beta0.2")
-    if fx:
+    if fx and d["config"]["n_test"] < 300:
+        lines.append(f"- 协议自检：小样本档（n={d['config']['n_test']}）不做逐位复现核对；"
+                     "全量档（n=300）须与已发布数字逐位一致")
+    elif fx:
         pub = "5/71" if d['config']['seed_test'] == 123 else "7/64"
         kc_pub = "17/76" if d['config']['seed_test'] == 123 else "17/75"
         lines.append(f"- 协议自检：`fixed@0.20` KW 救回 {fx.get('rescue_kw')}（已发布 {pub}）、"
