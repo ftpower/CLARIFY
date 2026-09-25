@@ -66,6 +66,12 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# 环境自检：多数 case 依赖 pytorch_env0（torch/numpy/scipy）；在 base 下会直接报 ModuleNotFoundError
+if ! python -c "import torch" 2>/dev/null; then
+  echo "❌ 当前 python 缺少 torch（可能未激活 pytorch_env0）。请先执行：conda activate pytorch_env0" >&2
+  exit 1
+fi
+
 MODEL_1P7B="${MODEL_1P7B:-Qwen/Qwen3-1.7B}"
 MODEL_8B="${MODEL_8B:-Qwen/Qwen3-8B}"
 ROME_LOAD="${ROME_LOAD:-experiments/phase9_multi_state/outputs_phase9/phase9_extract_compact.json}"
