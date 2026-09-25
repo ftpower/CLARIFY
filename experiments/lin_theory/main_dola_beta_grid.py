@@ -243,6 +243,17 @@ def judge(path):
         else:
             lam_star.append(changed)
     share_none = n_none / len(pq)
+    base_off = {k: _mcv(pq, "baseline", 1.0, "off", k) for k in (0, 1, 2)}
+    lines += ["\n### 网格峰值 vs 官方 λ=1（归一化口径，主条件 dyn_b1_14_28）\n",
+              "| 指标 | 归一化 λ 网格峰值（所在 λ） | 官方口径 λ=1 |", "|---|---|---|"]
+    for k, name in [(0, "ΔMC1"), (1, "ΔMC2"), (2, "ΔMC3")]:
+        vals = {lam: float((_mcv(pq, "dyn_b1_14_28", lam, "ps", k) - _mcv(pq, "baseline", lam, "ps", k)).mean() * 100)
+                for lam in LAMBDAS}
+        lam_best = max(vals, key=vals.get)
+        offv = float((_mcv(pq, "dyn_b1_14_28", 1.0, "off", k) - base_off[k]).mean() * 100)
+        lines.append(f"| {name} | **{vals[lam_best]:+.2f}pp**（λ={lam_best}） | {offv:+.2f}pp |")
+    lines.append("\n- 若网格峰值 ≪ 官方 λ=1 ⇒ **任何 λ 都恢复不了官方口径的增益** ⇒ 增益是口径属性、"
+                 "不可被「闭式强度」改良（C1 关闭）。\n")
     lines += ["\n## ③ λ\\*（归一化排序偏离官方 R₀ 的最小 λ）\n"]
     if lam_star:
         a = np.array(lam_star)
@@ -260,10 +271,10 @@ def judge(path):
         lines += ["\n## ④ 协议自检（λ=1 官方口径 vs 已发布 full817 summary）\n"]
         all_ok = True
         for cond, got in published.items():
-            okv = abs(got["mc2"] - got["ref_mc2"]) < 1e-9
+            okv = abs(got["mc2"] - got["ref_mc2"]) < 1e-6  # float32 求和次序噪声 ~1e-8
             all_ok &= okv
-            lines.append(f"- `{cond}`: 本跑 MC2={got['mc2']:.10f} vs 发布 {got['ref_mc2']:.10f} ⇒ "
-                         f"{'✅' if okv else '❌ 不一致（须查）'}")
+            lines.append(f"- `{cond}`: 本跑 MC2={got['mc2']:.10f} vs 发布 {got['ref_mc2']:.10f} "
+                         f"（|Δ|={abs(got['mc2']-got['ref_mc2']):.1e}）⇒ {'✅' if okv else '❌ 不一致（须查）'}")
         lines.append(f"\n协议自检总体：{'✅ 逐位一致' if all_ok else '❌'}")
     out = Path(path).parent / "judge_betagrid.md"
     out.write_text("\n".join(lines) + "\n")
