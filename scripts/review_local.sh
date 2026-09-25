@@ -47,6 +47,10 @@
 #   bash scripts/review_local.sh dola-mc-judge     # 零 GPU 判读（两折选桶 + 三分支判定）
 #   bash scripts/review_local.sh dola-mc-8b        # 同上 8B（服务器用，~1–1.5h）
 #   bash scripts/review_local.sh dola-mc-8b-jsd    # S1 8B 档（服务器用）
+#   bash scripts/review_local.sh dola-l0           # DoLa 改进候选 L0 三项（零 GPU：C2 口径分解 / C3 清单 / C1 β*）
+#   bash scripts/review_local.sh dola-l0-c2        # L0-1 C2 口径分解（等长子集 + 长度分层 + 重尾结构）
+#   bash scripts/review_local.sh dola-l0-c3        # L0-2 C3 适用性预检清单回算
+#   bash scripts/review_local.sh dola-l0-c1        # L0-3 C1 闭式强度 β* 决策差异率（零 GPU 筛查）
 #
 # 说明：每条命令写成单行（`\` 续行在部分终端粘贴时会因行尾空格失效）。
 # 服务器命令请自行补 `unset HF_ENDPOINT && HF_HOME=...` 前缀（见 runbook §2）。
@@ -236,6 +240,21 @@ case "${1:-}" in
     ;;
   dola-mc-8b-jsd)
     env -u HF_ENDPOINT HF_HOME="${HF_HOME_SERVER:-/root/autodl-tmp/huggingface_cache}" python -u experiments/lin_theory/diagnose_dola_jsd_layers.py --model "$MODEL_8B" --n_questions "${NQ:-100}"
+    ;;
+  dola-l0)
+    # DoLa 改进候选 L0（零 GPU；判据见 docs/protocol/dola-l0-analysis-20260925.md）
+    python experiments/lin_theory/analyze_dola_l0_c2.py
+    python experiments/lin_theory/audit_dola_applicability.py
+    python experiments/lin_theory/diagnose_dola_betastar_decision.py
+    ;;
+  dola-l0-c2)
+    python experiments/lin_theory/analyze_dola_l0_c2.py
+    ;;
+  dola-l0-c3)
+    python experiments/lin_theory/audit_dola_applicability.py
+    ;;
+  dola-l0-c1)
+    python experiments/lin_theory/diagnose_dola_betastar_decision.py
     ;;
   *)
     sed -n '2,40p' "$0"
