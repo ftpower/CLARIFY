@@ -55,6 +55,8 @@
 #   bash scripts/review_local.sh betastar-smoke    # C1 前置门小样本（n=30：fixed@0.20 须逐位复现已发布数字）
 #   bash scripts/review_local.sh betastar          # C1 全量（n=300 seed123：4 固定 β + betastar + tau + rand_strength）
 #   bash scripts/review_local.sh betastar-456      # C1 第二 seed（seed456）
+#   bash scripts/review_local.sh betagrid           # E2：DoLa 原生域 λ 网格（惰性定理实测 + λ* 分布，~25–30 分钟）
+#   bash scripts/review_local.sh betagrid-judge     # E2 判读（零 GPU）
 #
 # 说明：每条命令写成单行（`\` 续行在部分终端粘贴时会因行尾空格失效）。
 # 服务器命令请自行补 `unset HF_ENDPOINT && HF_HOME=...` 前缀（见 runbook §2）。
@@ -279,6 +281,13 @@ case "${1:-}" in
     ;;
   betastar-456)
     python experiments/lin_theory/main_tldc_betastar.py --n_test 300 --seed_test 456
+    ;;
+  betagrid)
+    # E2：DoLa 原生域 λ 网格（一次前向/选项扫 λ×两侧口径；判据见 dola-c1-validation-20260925.md §5.3）
+    python experiments/lin_theory/main_dola_beta_grid.py --model "$MODEL_1P7B"
+    ;;
+  betagrid-judge)
+    python experiments/lin_theory/main_dola_beta_grid.py --judge "${JSON:-experiments/outputs/dola_mc_betagrid/betagrid_Qwen3-1.7B_n817.json}"
     ;;
   betastar-judge)
     python experiments/lin_theory/main_tldc_betastar.py --judge "${JSON:-experiments/outputs/tldc_betastar/betastar_Qwen3-1.7B_n300_s123.json}"
