@@ -51,6 +51,10 @@
 #   bash scripts/review_local.sh dola-l0-c2        # L0-1 C2 口径分解（等长子集 + 长度分层 + 重尾结构）
 #   bash scripts/review_local.sh dola-l0-c3        # L0-2 C3 适用性预检清单回算
 #   bash scripts/review_local.sh dola-l0-c1        # L0-3 C1 闭式强度 β* 决策差异率（零 GPU 筛查）
+#   bash scripts/review_local.sh betastar-selftest # C1 决定性验证前置门（零 GPU：闭式≡暴力扫描 + stub 整链路）
+#   bash scripts/review_local.sh betastar-smoke    # C1 前置门小样本（n=30：fixed@0.20 须逐位复现已发布数字）
+#   bash scripts/review_local.sh betastar          # C1 全量（n=300 seed123：4 固定 β + betastar + tau + rand_strength）
+#   bash scripts/review_local.sh betastar-456      # C1 第二 seed（seed456）
 #
 # 说明：每条命令写成单行（`\` 续行在部分终端粘贴时会因行尾空格失效）。
 # 服务器命令请自行补 `unset HF_ENDPOINT && HF_HOME=...` 前缀（见 runbook §2）。
@@ -255,6 +259,27 @@ case "${1:-}" in
     ;;
   dola-l0-c1)
     python experiments/lin_theory/diagnose_dola_betastar_decision.py
+    ;;
+  betastar-selftest)
+    # 零 GPU 前置门：闭式 β*_min ≡ 暴力二分 + 臂逻辑 + 引理 2 + 表驱动 stub 整链路
+    python experiments/lin_theory/main_tldc_betastar.py --selftest
+    ;;
+  betastar-smoke)
+    # n=30 前置门：须先跑（协议 §4）——fixed@0.20 复现已发布数字 + β*_min 中位数 ≥ 0.01 才跑全量
+    python experiments/lin_theory/main_tldc_betastar.py --n_test 30 --seed_test "${SEED:-123}" --smoke
+    ;;
+  betastar)
+    python experiments/lin_theory/main_tldc_betastar.py --n_test 300 --seed_test "${SEED:-123}"
+    ;;
+  betastar-456)
+    python experiments/lin_theory/main_tldc_betastar.py --n_test 300 --seed_test 456
+    ;;
+  betastar-judge)
+    python experiments/lin_theory/main_tldc_betastar.py --judge "${JSON:-experiments/outputs/tldc_betastar/betastar_Qwen3-1.7B_n300_s123.json}"
+    ;;
+  betastar-8b)
+    # 服务器用（8B 上算子净正：H1′ 成立档）——命令格式须按 CLAUDE.md 硬性要求加前缀
+    env -u HF_ENDPOINT HF_HOME="${HF_HOME_SERVER:-/root/autodl-tmp/huggingface_cache}" python -u experiments/lin_theory/main_tldc_betastar.py --model Qwen/Qwen3-8B --layer_early 28 --n_test 300 --seed_test "${SEED:-123}"
     ;;
   *)
     sed -n '2,40p' "$0"
