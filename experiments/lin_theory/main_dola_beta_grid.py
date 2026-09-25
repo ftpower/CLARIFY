@@ -316,10 +316,14 @@ def main():
             for lam in LAMBDAS:
                 st_o = [cache[a][cond][str(lam)]["off"] for a in ref_true]
                 sf_o = [cache[a][cond][str(lam)]["off"] for a in ref_false]
-                mc_off = MC_calcs(st_o, sf_o, ref_true, ref_best)
                 st_p = [cache[a][cond][str(lam)]["ps"] for a in ref_true]
                 sf_p = [cache[a][cond][str(lam)]["ps"] for a in ref_false]
-                mc_ps = MC_calcs(st_p, sf_p, ref_true, ref_best)
+                # 大 λ 下官方口径分数可 >700（对比项被 λ 放大）⇒ MC_calcs 的下溢守卫探针
+                # exp 会溢出——守卫返回 False（即"无下溢"），MC1/MC3 用原始分数、MC2 用公共平移，
+                # 数值路径均不受影响；此处仅屏蔽探针的溢出告警噪声。
+                with np.errstate(over="ignore"):
+                    mc_off = MC_calcs(st_o, sf_o, ref_true, ref_best)
+                    mc_ps = MC_calcs(st_p, sf_p, ref_true, ref_best)
                 rec["mc"][cond][str(lam)] = {
                     "off": [mc_off["MC1"], mc_off["MC2"], mc_off["MC3"]],
                     "ps": [mc_ps["MC1"], mc_ps["MC2"], mc_ps["MC3"]]}
