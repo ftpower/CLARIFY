@@ -61,6 +61,7 @@
 #   bash scripts/review_local.sh dola-c5-selftest   # 同上合成数据自检（秒级）
 #   bash scripts/review_local.sh dola-c3-neg        # C3 模型级负例：pythia-1b-deduped（NEG_MODEL/NQ 可覆盖）
 #   bash scripts/review_local.sh dola-c3-neg-opt    # C3 模型级负例：opt-125m
+#   bash scripts/review_local.sh dola-c3-pos-8b     # C3 同族正例：8B 档三条件回算（零 GPU；须先跑 dola-mc-8b-jsd/-8b）
 #   bash scripts/review_local.sh dola-gen-smoke     # 生成侧行为指标小样本试运行（n=30，需 GPU）
 #   bash scripts/review_local.sh dola-gen           # 生成侧行为指标主档（n=300，NQ 可覆盖，需 GPU）
 #
@@ -314,6 +315,12 @@ case "${1:-}" in
     ;;
   dola-gen)
     python experiments/lin_theory/eval_dola_generation.py --model "$MODEL_1P7B" --n_questions "${NQ:-300}" --tag n300
+    ;;
+  dola-c3-pos-8b)
+    # C3 同族正例：8B 档三条件回算（零 GPU；判据见 docs/protocol/dola-c3-positive-8b-20260927.md §5）
+    # 须先跑 dola-mc-8b-jsd（① 剖面）与 dola-mc-8b（②③），并把 outputs/dola_mc_repro/ scp 回本地
+    # JSD_JSON/MC_JSON/OUT_DIR/OUT_NAME/LABEL 可覆盖（1.7B 产物即可用于验证本 case 的链路）
+    python experiments/lin_theory/audit_dola_applicability.py --jsd_json "${JSD_JSON:-experiments/outputs/dola_mc_repro/jsd_profile_Qwen3-8B_n100.json}" --mc_json "${MC_JSON:-experiments/outputs/dola_mc_repro/dola_mc_Qwen3-8B_full817.json}" --out_dir "${OUT_DIR:-experiments/outputs/dola_c3_positive_8b_20260927}" --out_name "${OUT_NAME:-c3_Qwen3-8B}" --label "${LABEL:-Qwen3-8B（同族正例，n=817）}" --label_role "${LABEL_ROLE:-同族正例}"
     ;;
   dola-c3-neg-opt)
     python experiments/lin_theory/diagnose_dola_jsd_layers.py --model "${NEG_MODEL:-facebook/opt-125m}" --n_questions "${NQ:-100}"

@@ -82,6 +82,8 @@ def main():
     ap.add_argument("--out_dir", default=str(OUT_DIR))
     ap.add_argument("--out_name", default="l0_c3", help="产物名（不含扩展名）")
     ap.add_argument("--label", default="", help="报告标题附加说明（如模型名）")
+    ap.add_argument("--label_role", default="模型级负例",
+                    help="报告标题中 label 的角色（默认模型级负例；同族正例档传 '同族正例'）")
     args = ap.parse_args()
     out_dir = Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -125,10 +127,17 @@ def main():
     res["sources"] = {"jsd_json": str(jsd_p), "mc_json": str(mc_p), "label": args.label}
     (out_dir / f"{args.out_name}.json").write_text(json.dumps(res, ensure_ascii=False, indent=2))
 
+    # 档位判据指针：按 label_role 指向对应协议文件（未识别角色时指向清单本体）
+    role_protocol = {"模型级负例": "docs/protocol/dola-c3-negative-20260927.md",
+                     "同族正例": "docs/protocol/dola-c3-positive-8b-20260927.md"}
+    role_note = (""
+                 if not args.label else
+                 f"{args.label_role}判据见 `" + role_protocol.get(
+                     args.label_role, "docs/protocol/dola-audit-checklist-20260927.md") + "`")
     L = ["# L0-2（C3）DoLa 适用性预检清单报告\n",
-         ("模型级负例（" + args.label + "）" if args.label else "")
+         (f"{args.label_role}（" + args.label + "）" if args.label else "")
          + "判据：`docs/protocol/dola-l0-analysis-20260925.md` §2（执行前设定）"
-         + ("；模型级负例判据见 `docs/protocol/dola-c3-negative-20260927.md`" if args.label else "")
+         + ("；" + role_note if role_note else "")
          + "；\n数据："
          f"`{jsd_p.name}` + `{mc_p.name}`（零 GPU）。\n",
          "## 三条件回算\n",
@@ -154,9 +163,11 @@ def main():
     for c, v in res["configs"].items():
         L.append(f"| `{c}` | {v['n_pass']}/3 | {v['verdict']} | {'、'.join(v['failed_items']) or '—'} |")
     dp = res["discriminative_power"]
+    tail = ("。模型级负例（GPT2 级无分化模型）需一次前向，不在本轮零 GPU 范围。"
+            if not args.label else
+            f"。本档为带标签运行（{args.label_role}：{args.label}），档位判据见上引协议文件。")
     L.append(f"\n**判别力核验**：内部负例＝{dp['internal_negative_examples']}（③ 不通过）⇒ "
-             f"清单在'选层退化'这一轴上有判别力：{'✅' if dp['ok'] else '❌'}。"
-             "模型级负例（GPT2 级无分化模型）需一次前向，不在本轮零 GPU 范围。\n")
+             f"清单在'选层退化'这一轴上有判别力：{'✅' if dp['ok'] else '❌'}" + tail + "\n")
     L.append(f"**敏感性**：prompt 剖面下严格 JSD max/min = "
              f"{d_prompt['strict_jsd_max_min_ratio']:.2f}、官方 R max/min = "
              f"{d_prompt['official_R_max_min_ratio']:.2f}（① 在两侧剖面上均"
