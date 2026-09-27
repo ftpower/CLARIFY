@@ -57,6 +57,8 @@
 #   bash scripts/review_local.sh betastar-456      # C1 第二 seed（seed456）
 #   bash scripts/review_local.sh betagrid           # E2：DoLa 原生域 λ 网格（惰性定理实测 + λ* 分布，~25–30 分钟）
 #   bash scripts/review_local.sh betagrid-judge     # E2 判读（零 GPU）
+#   bash scripts/review_local.sh dola-c5            # C5 完美选择上界复算（零 GPU：U0/A*/U1/U2 + 精度阶梯）
+#   bash scripts/review_local.sh dola-c5-selftest   # 同上合成数据自检（秒级）
 #
 # 说明：每条命令写成单行（`\` 续行在部分终端粘贴时会因行尾空格失效）。
 # 服务器命令请自行补 `unset HF_ENDPOINT && HF_HOME=...` 前缀（见 runbook §2）。
@@ -288,6 +290,13 @@ case "${1:-}" in
     ;;
   betagrid-judge)
     python experiments/lin_theory/main_dola_beta_grid.py --judge "${JSON:-experiments/outputs/dola_mc_betagrid/betagrid_Qwen3-1.7B_n817.json}"
+    ;;
+  dola-c5)
+    # C5 完美选择上界复算（零 GPU；判据见 docs/protocol/dola-c5-ceiling-20260927.md §1–§3）
+    python experiments/lin_theory/analyze_dola_c5_ceiling.py
+    ;;
+  dola-c5-selftest)
+    python experiments/lin_theory/analyze_dola_c5_ceiling.py --selftest
     ;;
   betastar-judge)
     python experiments/lin_theory/main_tldc_betastar.py --judge "${JSON:-experiments/outputs/tldc_betastar/betastar_Qwen3-1.7B_n300_s123.json}"
