@@ -13,6 +13,9 @@
 #   bash scripts/review_local.sh dola-static       # DoLa 1.7B 静态档
 #   bash scripts/review_local.sh dola-dynamic      # DoLa 1.7B 动态档
 #   bash scripts/review_local.sh dola-8b-baseline  # DoLa 8B baseline（服务器用）
+#   bash scripts/review_local.sh dola-8b-static    # DoLa 8B 静态档（服务器用；L_PREMATURE 默认 14）
+#   bash scripts/review_local.sh dola-8b-dynamic   # DoLa 8B 动态档（服务器用；逐 token JSD 选层）
+#   bash scripts/review_local.sh dola-mc-8b-resume # 原生域 8B 中断后续跑
 #   bash scripts/review_local.sh beta-sweep        # Phase 24 β sweep（服务器用，改 BETA=...）
 #   bash scripts/review_local.sh geometry          # FAD/S5 几何档案：baseline 轨迹（seed 123）
 #   bash scripts/review_local.sh geometry-456      # 同上（seed 456）
@@ -115,16 +118,24 @@ case "${1:-}" in
     python experiments/phase16_untried/phase16_rome.py --load "$ROME_LOAD" --model "$MODEL_1P7B" --layers 11 --n_calibrate 50 --seed_cal 42 --n_val 100 --seed_val 789 --n_test 30 --seed_test 123 --lambdas 0.0 5.0 20.0 100.0 --layer_early 20 --output_dir experiments/outputs/rome_poscontrol
     ;;
   dola-baseline)
-    python experiments/lin_theory/main_dola_baseline.py --model "$MODEL_1P7B" --mode baseline --layer_early 20 --n_test 300 --seed_test 123 --save_samples --output_dir experiments/outputs/dola_baseline_review_1p7b
+    python experiments/lin_theory/main_dola_baseline.py --model "$MODEL_1P7B" --mode baseline --layer_early 20 --n_test 300 --seed_test "${SEED:-123}" --save_samples --output_dir experiments/outputs/dola_baseline_review_1p7b
     ;;
   dola-static)
-    python experiments/lin_theory/main_dola_baseline.py --model "$MODEL_1P7B" --mode dola-static --premature_layer 7 --layer_early 20 --n_test 300 --seed_test 123 --alpha 0.1 --candidate_stride 4 --save_samples --output_dir experiments/outputs/dola_baseline_review_1p7b
+    python experiments/lin_theory/main_dola_baseline.py --model "$MODEL_1P7B" --mode dola-static --premature_layer "${L_PREMATURE:-7}" --layer_early 20 --n_test 300 --seed_test "${SEED:-123}" --alpha 0.1 --candidate_stride 4 --save_samples --output_dir experiments/outputs/dola_baseline_review_1p7b
     ;;
   dola-dynamic)
-    python experiments/lin_theory/main_dola_baseline.py --model "$MODEL_1P7B" --mode dola-dynamic --layer_early 20 --n_test 300 --seed_test 123 --alpha 0.1 --candidate_stride 4 --save_samples --output_dir experiments/outputs/dola_baseline_review_1p7b
+    python experiments/lin_theory/main_dola_baseline.py --model "$MODEL_1P7B" --mode dola-dynamic --layer_early 20 --n_test 300 --seed_test "${SEED:-123}" --alpha 0.1 --candidate_stride 4 --save_samples --output_dir experiments/outputs/dola_baseline_review_1p7b
     ;;
   dola-8b-baseline)
-    env -u HF_ENDPOINT HF_HOME="${HF_HOME_SERVER:-/root/autodl-tmp/huggingface_cache}" python -u experiments/lin_theory/main_dola_baseline.py --model "$MODEL_8B" --mode baseline --layer_early 28 --n_test 300 --seed_test 123 --max_new 20 --save_samples --output_dir experiments/outputs/dola_baseline_review
+    env -u HF_ENDPOINT HF_HOME="${HF_HOME_SERVER:-/root/autodl-tmp/huggingface_cache}" python -u experiments/lin_theory/main_dola_baseline.py --model "$MODEL_8B" --mode baseline --layer_early 28 --n_test 300 --seed_test "${SEED:-123}" --max_new 20 --save_samples --output_dir experiments/outputs/dola_baseline_review
+    ;;
+  dola-8b-static)
+    # 结题底线判据的对比臂（服务器用；runbook §2.2；SEED 可覆盖，L_PREMATURE 默认 14=中层起步）
+    env -u HF_ENDPOINT HF_HOME="${HF_HOME_SERVER:-/root/autodl-tmp/huggingface_cache}" python -u experiments/lin_theory/main_dola_baseline.py --model "$MODEL_8B" --mode dola-static --premature_layer "${L_PREMATURE:-14}" --layer_early 28 --n_test 300 --seed_test "${SEED:-123}" --alpha 0.1 --max_new 20 --save_samples --output_dir experiments/outputs/dola_baseline_review
+    ;;
+  dola-8b-dynamic)
+    # 结题底线判据的对比臂（服务器用；runbook §2.3；论文式逐 token 选层，候选＝全部偶数层，约 2–3× vanilla）
+    env -u HF_ENDPOINT HF_HOME="${HF_HOME_SERVER:-/root/autodl-tmp/huggingface_cache}" python -u experiments/lin_theory/main_dola_baseline.py --model "$MODEL_8B" --mode dola-dynamic --layer_early 28 --n_test 300 --seed_test "${SEED:-123}" --alpha 0.1 --max_new 20 --save_samples --output_dir experiments/outputs/dola_baseline_review
     ;;
   beta-sweep)
     env -u HF_ENDPOINT HF_HOME="${HF_HOME_SERVER:-/root/autodl-tmp/huggingface_cache}" python -u experiments/lin_theory/train_lora_delta.py --mode train --model_path "$MODEL_8B" --n_train 200 --n_test 800 --n_val 200 --epochs 1 --kc_ce_only --kl_beta "$BETA"
@@ -259,6 +270,10 @@ case "${1:-}" in
     ;;
   dola-mc-8b-jsd)
     env -u HF_ENDPOINT HF_HOME="${HF_HOME_SERVER:-/root/autodl-tmp/huggingface_cache}" python -u experiments/lin_theory/diagnose_dola_jsd_layers.py --model "$MODEL_8B" --n_questions "${NQ:-100}"
+    ;;
+  dola-mc-8b-resume)
+    # 中断后续跑（读同名 .partial.jsonl，指纹须一致；最多只损失当前一题）
+    env -u HF_ENDPOINT HF_HOME="${HF_HOME_SERVER:-/root/autodl-tmp/huggingface_cache}" python -u experiments/lin_theory/main_dola_mc.py --model "$MODEL_8B" --fold all --tag full817 --resume
     ;;
   dola-l0)
     # DoLa 改进候选 L0（零 GPU；判据见 docs/protocol/dola-l0-analysis-20260925.md）
