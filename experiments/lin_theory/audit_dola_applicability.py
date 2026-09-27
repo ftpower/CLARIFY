@@ -7,16 +7,19 @@
     ③ 选层非退化：dynamic 条件的选层分布最大份额 ≤ 0.95 且跨度 ≥ 4 层
 
 数据（零 GPU，产物已在手）：
-    experiments/outputs/dola_mc_repro/jsd_profile_Qwen3-1.7B_n100.json
-    experiments/outputs/dola_mc_repro/dola_mc_Qwen3-1.7B_full817ps.json
+    默认：experiments/outputs/dola_mc_repro/jsd_profile_Qwen3-1.7B_n100.json
+          experiments/outputs/dola_mc_repro/dola_mc_Qwen3-1.7B_full817ps.json
+    换模型：`--jsd_json` / `--mc_json`（模型级负例走
+    `docs/protocol/dola-c3-negative-20260927.md` 的两条命令产出）
 
 判别力核验（负例）：
     内部负例＝同产物中的退化的 dynamic 条件（`dyn_b0_0_14`），预期 ③ 不通过；
-    模型级负例（GPT2 级无分化模型）不在本轮零 GPU 范围内。
+    模型级负例＝小模型（pythia-1b-deduped / opt-125m），判据见上述协议文件。
 
 用法：
     python3 experiments/lin_theory/audit_dola_applicability.py [--selftest]
-输出：experiments/outputs/dola_l0_20260925/l0_c3.json + l0_c3_report.md
+        [--jsd_json P] [--mc_json P] [--out_dir D] [--out_name NAME] [--label STR]
+输出：<out_dir>/<out_name>.json + <out_name>_report.md（默认 dola_l0_20260925/l0_c3.*）
 """
 
 from __future__ import annotations
@@ -74,11 +77,18 @@ def check_selection(mc, cond):
 def main():
     ap = argparse.ArgumentParser(description="L0-2 C3 适用性预检清单")
     ap.add_argument("--selftest", action="store_true")
+    ap.add_argument("--jsd_json", default=str(JSD_JSON), help="JSD 逐层剖面产物")
+    ap.add_argument("--mc_json", default=str(MC_JSON), help="MC 打分产物（含 baseline 与选层分布）")
+    ap.add_argument("--out_dir", default=str(OUT_DIR))
+    ap.add_argument("--out_name", default="l0_c3", help="产物名（不含扩展名）")
+    ap.add_argument("--label", default="", help="报告标题附加说明（如模型名）")
     args = ap.parse_args()
-    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    jsd_p, mc_p = Path(args.jsd_json), Path(args.mc_json)
 
-    jsd = json.loads(JSD_JSON.read_text())
-    mc = json.loads(MC_JSON.read_text())
+    jsd = json.loads(jsd_p.read_text())
+    mc = json.loads(mc_p.read_text())
 
     d_answer = check_differentiation(jsd, "answer")
     d_prompt = check_differentiation(jsd, "prompt")
@@ -112,11 +122,15 @@ def main():
         "ok": bool(len(neg) >= 1),
         "note": "预期：退化的 dynamic 条件（桶内选层集中于最浅层）在 ③ 上不通过",
     }
-    (OUT_DIR / "l0_c3.json").write_text(json.dumps(res, ensure_ascii=False, indent=2))
+    res["sources"] = {"jsd_json": str(jsd_p), "mc_json": str(mc_p), "label": args.label}
+    (out_dir / f"{args.out_name}.json").write_text(json.dumps(res, ensure_ascii=False, indent=2))
 
     L = ["# L0-2（C3）DoLa 适用性预检清单报告\n",
-         "判据：`docs/protocol/dola-l0-analysis-20260925.md` §2（执行前设定）；"
-         f"数据：`{JSD_JSON.name}` + `{MC_JSON.name}`（1.7B，零 GPU）。\n",
+         ("模型级负例（" + args.label + "）" if args.label else "")
+         + "判据：`docs/protocol/dola-l0-analysis-20260925.md` §2（执行前设定）"
+         + ("；模型级负例判据见 `docs/protocol/dola-c3-negative-20260927.md`" if args.label else "")
+         + "；\n数据："
+         f"`{jsd_p.name}` + `{mc_p.name}`（零 GPU）。\n",
          "## 三条件回算\n",
          "| # | 条件 | 观测 | 阈值 | 结果 |", "|---|---|---|---|---|",
          f"| ① | 层间分化（answer 剖面，严格 JSD） | max/min = {d_answer['strict_jsd_max_min_ratio']:.2f} "
@@ -147,7 +161,7 @@ def main():
              f"{d_prompt['strict_jsd_max_min_ratio']:.2f}、官方 R max/min = "
              f"{d_prompt['official_R_max_min_ratio']:.2f}（① 在两侧剖面上均"
              f"{'通过' if d_prompt['ok'] else '不通过'}）。\n")
-    (OUT_DIR / "l0_c3_report.md").write_text("\n".join(L) + "\n")
+    (out_dir / f"{args.out_name}_report.md").write_text("\n".join(L) + "\n")
     print("\n".join(L))
     return 0
 

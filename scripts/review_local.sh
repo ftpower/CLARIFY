@@ -59,6 +59,10 @@
 #   bash scripts/review_local.sh betagrid-judge     # E2 判读（零 GPU）
 #   bash scripts/review_local.sh dola-c5            # C5 完美选择上界复算（零 GPU：U0/A*/U1/U2 + 精度阶梯）
 #   bash scripts/review_local.sh dola-c5-selftest   # 同上合成数据自检（秒级）
+#   bash scripts/review_local.sh dola-c3-neg        # C3 模型级负例：pythia-1b-deduped（NEG_MODEL/NQ 可覆盖）
+#   bash scripts/review_local.sh dola-c3-neg-opt    # C3 模型级负例：opt-125m
+#   bash scripts/review_local.sh dola-gen-smoke     # 生成侧行为指标小样本试运行（n=30，需 GPU）
+#   bash scripts/review_local.sh dola-gen           # 生成侧行为指标主档（n=300，NQ 可覆盖，需 GPU）
 #
 # 说明：每条命令写成单行（`\` 续行在部分终端粘贴时会因行尾空格失效）。
 # 服务器命令请自行补 `unset HF_ENDPOINT && HF_HOME=...` 前缀（见 runbook §2）。
@@ -297,6 +301,24 @@ case "${1:-}" in
     ;;
   dola-c5-selftest)
     python experiments/lin_theory/analyze_dola_c5_ceiling.py --selftest
+    ;;
+  dola-c3-neg)
+    # C3 模型级负例（需 GPU）：判据见 docs/protocol/dola-c3-negative-20260927.md；顺序固定
+    python experiments/lin_theory/diagnose_dola_jsd_layers.py --model "${NEG_MODEL:-EleutherAI/pythia-1b-deduped}" --n_questions "${NQ:-100}"
+    python experiments/lin_theory/main_dola_mc.py --model "${NEG_MODEL:-EleutherAI/pythia-1b-deduped}" --n_questions "${NQ:-100}" --fold all --tag neg100
+    python experiments/lin_theory/audit_dola_applicability.py --jsd_json "experiments/outputs/dola_mc_repro/jsd_profile_${NEG_TAG:-pythia-1b-deduped}_n${NQ:-100}.json" --mc_json "experiments/outputs/dola_mc_repro/dola_mc_${NEG_TAG:-pythia-1b-deduped}_neg100.json" --out_dir experiments/outputs/dola_c3_negative_20260927 --out_name "c3_${NEG_TAG:-pythia-1b-deduped}" --label "${NEG_TAG:-pythia-1b-deduped}（n=${NQ:-100}）"
+    ;;
+  dola-gen-smoke)
+    # 生成侧行为指标（判据见 docs/protocol/dola-generation-eval-20260927.md）；首次上真机先跑此档
+    python experiments/lin_theory/eval_dola_generation.py --model "$MODEL_1P7B" --n_questions "${NQ:-30}" --tag smoke30
+    ;;
+  dola-gen)
+    python experiments/lin_theory/eval_dola_generation.py --model "$MODEL_1P7B" --n_questions "${NQ:-300}" --tag n300
+    ;;
+  dola-c3-neg-opt)
+    python experiments/lin_theory/diagnose_dola_jsd_layers.py --model "${NEG_MODEL:-facebook/opt-125m}" --n_questions "${NQ:-100}"
+    python experiments/lin_theory/main_dola_mc.py --model "${NEG_MODEL:-facebook/opt-125m}" --n_questions "${NQ:-100}" --fold all --tag neg100
+    python experiments/lin_theory/audit_dola_applicability.py --jsd_json "experiments/outputs/dola_mc_repro/jsd_profile_${NEG_TAG:-opt-125m}_n${NQ:-100}.json" --mc_json "experiments/outputs/dola_mc_repro/dola_mc_${NEG_TAG:-opt-125m}_neg100.json" --out_dir experiments/outputs/dola_c3_negative_20260927 --out_name "c3_${NEG_TAG:-opt-125m}" --label "${NEG_TAG:-opt-125m}（n=${NQ:-100}）"
     ;;
   betastar-judge)
     python experiments/lin_theory/main_tldc_betastar.py --judge "${JSON:-experiments/outputs/tldc_betastar/betastar_Qwen3-1.7B_n300_s123.json}"
