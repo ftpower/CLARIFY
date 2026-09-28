@@ -67,6 +67,9 @@
 #   bash scripts/review_local.sh dola-c3-pos-8b     # C3 同族正例：8B 档三条件回算（零 GPU；须先跑 dola-mc-8b-jsd/-8b）
 #   bash scripts/review_local.sh dola-gen-smoke     # 生成侧行为指标小样本试运行（n=30，需 GPU）
 #   bash scripts/review_local.sh dola-gen           # 生成侧行为指标主档（n=300，NQ 可覆盖，需 GPU）
+#   bash scripts/review_local.sh dola-gen-sep-rp10  # 退化归因分离 rp=1.0 档（n=100，需 GPU）
+#   bash scripts/review_local.sh dola-gen-sep-rp12  # 退化归因分离 rp=1.2 档（n=100，需 GPU）
+#   bash scripts/review_local.sh dola-gen-sep-judge # 退化归因分离判读（零 GPU；须先跑 rp10/rp12）
 #
 # 说明：每条命令写成单行（`\` 续行在部分终端粘贴时会因行尾空格失效）。
 # 服务器命令请自行补 `unset HF_ENDPOINT && HF_HOME=...` 前缀（见 runbook §2）。
@@ -330,6 +333,21 @@ case "${1:-}" in
     ;;
   dola-gen)
     python experiments/lin_theory/eval_dola_generation.py --model "$MODEL_1P7B" --n_questions "${NQ:-300}" --tag n300
+    ;;
+  dola-gen-sep-rp10)
+    # 退化归因分离 rp=1.0 档（判据见 docs/protocol/dola-gen-degeneration-separation-20260928.md §5）
+    python experiments/lin_theory/eval_dola_generation.py --model "$MODEL_1P7B" --n_questions "${NQ:-100}" --tag seprp10 --rp 1.0
+    ;;
+  dola-gen-sep-rp12)
+    # 退化归因分离 rp=1.2 档（与主档同协议值；NQ 须与 rp10 档一致）
+    python experiments/lin_theory/eval_dola_generation.py --model "$MODEL_1P7B" --n_questions "${NQ:-100}" --tag seprp12 --rp 1.2
+    ;;
+  dola-gen-sep-judge)
+    # 退化归因分离判读（零 GPU）：须先跑完 rp10/rp12 两档
+    python experiments/lin_theory/analyze_dola_gen_degen.py \
+      --json10 experiments/outputs/dola_generation_20260927/gen_Qwen3-1.7B_seprp10.json \
+      --json12 experiments/outputs/dola_generation_20260927/gen_Qwen3-1.7B_seprp12.json \
+      --out_dir experiments/outputs/dola_generation_20260927
     ;;
   dola-c3-pos-8b)
     # C3 同族正例：8B 档三条件回算（零 GPU；判据见 docs/protocol/dola-c3-positive-8b-20260927.md §5）
