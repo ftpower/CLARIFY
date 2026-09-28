@@ -163,6 +163,20 @@ case "${1:-}" in
     # 阶段2 对称 TLDC 轨迹（8B，服务器用）；SEED / SYM_BETA 可覆盖
     env -u HF_ENDPOINT HF_HOME="${HF_HOME_SERVER:-/root/autodl-tmp/huggingface_cache}" python -u experiments/lin_theory/dump_geometry_archive.py --model "$MODEL_8B" --layer_early 28 --n_test 300 --seed_test "${SEED:-123}" --operator sym --beta "${SYM_BETA:-0.20}" --output_dir experiments/outputs/geometry_archive_8b_sym
     ;;
+  rii-probe-sym)
+    # RII 方向 A·A2 探测档（判据见 docs/protocol/rii-response-informed-intervention-20260928.md §6.1）
+    # PROBE_BETA ∈ BETAS 网格；顺序固定 0.05 → 0.03 → 0.08
+    python experiments/lin_theory/dump_geometry_archive.py --model "$MODEL_1P7B" --layer_early 20 --n_test 300 --seed_test "${SEED:-123}" --operator sym --beta "${PROBE_BETA:-0.05}" --output_dir experiments/outputs/geometry_archive
+    ;;
+  rii-probe-judge)
+    # RII 方向 A·A2 判读（零 GPU；须先跑完探测档；判据同协议 §5）
+    python experiments/lin_theory/analyze_probe_select.py \
+      --seeds ${SEEDS:-123 456} \
+      --arch experiments/outputs/geometry_archive \
+      --probe_betas ${PROBE_BETAS:-0.03 0.05 0.08} \
+      --final_beta "${FINAL_BETA:-0.20}" \
+      --out_dir experiments/outputs/rii_probe_select
+    ;;
   ctrl-smoke)
     # 零机制对照臂冒烟（n=30，主判据档 β=0.20；先跑这个验证代码链路）
     python experiments/lin_theory/main_tldc_controls.py --model "$MODEL_1P7B" --layer_early 20 --n_test 30 --seed_test 123 --arms real shuffle --betas 0.2 --output_dir experiments/outputs/_smoke_tldc_ctrl
