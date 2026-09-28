@@ -410,6 +410,21 @@ def judge_products(records: list, conditions: list, primary: str) -> dict:
     }
 
 
+def _selfcheck_counts(res: dict) -> dict:
+    """取协议自检计数：**优先** `res['selfcheck']`（`main` 聚合后的真值），
+    仅在其缺失时回退到逐条件求和（兼容旧调用）。
+
+    2026-09-28 修复：生成档把计数存在 `res['selfcheck']`（见 `main`），而本函数原先只逐条件求和
+    ⇒ 报告抬头恒打印 `0/0`（n=300 档真实值 **12000/12000**）。计数本身逐题累加无误，
+    缺陷仅在报告渲染；同批产物 `results.selfcheck` 逐位可查。
+    """
+    sc = res.get("selfcheck")
+    if isinstance(sc, dict) and "lens_agree" in sc and "lens_n" in sc:
+        return {"lens_agree": int(sc["lens_agree"]), "lens_n": int(sc["lens_n"])}
+    return {"lens_agree": sum(v.get("lens_agree", 0) for v in res["conditions"].values()),
+            "lens_n": sum(v.get("lens_n", 0) for v in res["conditions"].values())}
+
+
 def render_report(meta: dict, res: dict, records: list, sample_n: int = 20, seed: int = 42) -> str:
     L = ["# DoLa 生成侧行为指标报告（审计章缺口二）\n",
          f"判据：`docs/protocol/dola-generation-eval-20260927.md` §1–§4（执行前设定）。"
@@ -421,8 +436,8 @@ def render_report(meta: dict, res: dict, records: list, sample_n: int = 20, seed
          "**判分规则**（执行前固定）：" + JUDGE_RULES["truth_like_alias"] + "；"
          + JUDGE_RULES["reject"] + "；优先级：" + JUDGE_RULES["priority"] + "。\n",
          f"**协议自检**：lens 重算成熟层 vs 真实 logits 的 argmax 一致率 "
-         f"{sum(v['lens_agree'] for v in res['conditions'].values())}/"
-         f"{sum(v['lens_n'] for v in res['conditions'].values())}（仅对比条件计入）\n",
+         f"{_selfcheck_counts(res)['lens_agree']}/"
+         f"{_selfcheck_counts(res)['lens_n']}（仅对比条件计入）\n",
          "## 行为指标（题级比例）\n",
          "| 条件 | truth_like | incorrect_like | reject | unmatched | 别名敏感性（前缀） | 截断比例 |",
          "|---|---|---|---|---|---|---|"]
@@ -542,10 +557,19 @@ def parse_buckets(args, n_layers):
     return default_buckets(n_layers)
 
 
-def judge_file(path: str, primary: str = "dola_dynamic") -> int:
+def judge_file(path: str, primary: str = "dola_dynamic", write_report: bool = False) -> int:
     d = json.loads(Path(path).read_text())
     res = judge_products(d["per_question"], d["meta"]["config"]["conditions"], primary)
-    print(render_report(d["meta"], res, d["per_question"]))
+    # 复用产物中已聚合的自检计数（逐题 `lens` 已在 `main` 中 pop，重判无法自行重算）
+    prior = (d.get("results") or {}).get("selfcheck")
+    if isinstance(prior, dict) and "lens_agree" in prior:
+        res["selfcheck"] = prior
+    md = render_report(d["meta"], res, d["per_question"])
+    print(md)
+    if write_report:
+        md_path = Path(path).with_name(Path(path).stem + "_report.md")
+        md_path.write_text(md)
+        print(f"[judge] 报告已写入 {md_path}", file=sys.stderr)
     return 0
 
 
@@ -710,8 +734,17 @@ def selftest() -> int:
                                    "relative_top": 0.0},
                         "protocol": {"deviations": ["stub"]}}, r1, recs_h1)
     ok_md = "结论：" in md and "配对事件" in md and "人工核对样本" in md
-    rok = ok_h1 and ok_h2 and ok_md
-    print(f"[R] 端到端报告（H1 分支 {ok_h1}；H2 分支 {ok_h2}；报告渲染 {ok_md}）: {'PASS' if rok else 'FAIL'}")
+    # 自检计数渲染（2026-09-28 回归项）：`res['selfcheck']` 存在时抬头必须报其值，
+    # 而不是逐条件求和得到的 0/0（该缺陷曾使 n=300 档报告误示「自检未执行」）
+    r1_sc = dict(r1, selfcheck={"lens_agree": 12000, "lens_n": 12000})
+    md_sc = render_report({"config": {"model": "stub", "conditions": ["baseline", "dola_dynamic"],
+                                      "n_questions": 10, "seed_subset": 42, "max_new": 20, "rp": 1.2,
+                                      "relative_top": 0.0},
+                           "protocol": {"deviations": ["stub"]}}, r1_sc, recs_h1)
+    ok_sc = ("12000/12000" in md_sc) and (_selfcheck_counts(r1_sc)["lens_n"] == 12000)
+    rok = ok_h1 and ok_h2 and ok_md and ok_sc
+    print(f"[R] 端到端报告（H1 分支 {ok_h1}；H2 分支 {ok_h2}；报告渲染 {ok_md}；"
+          f"自检计数渲染 {ok_sc}）: {'PASS' if rok else 'FAIL'}")
     ok &= rok
     print("=" * 72)
     print("自检结果：" + ("全部 PASS" if ok else "存在 FAIL"))
@@ -739,12 +772,14 @@ def main() -> int:
     ap.add_argument("--output_dir", type=str, default=str(DEFAULT_OUT))
     ap.add_argument("--tag", type=str, default=None)
     ap.add_argument("--judge", type=str, default=None)
+    ap.add_argument("--write_report", action="store_true",
+                    help="仅在 --judge 下生效：把报告写到产物同目录的 <stem>_report.md（默认只打印）")
     ap.add_argument("--selftest", action="store_true")
     args = ap.parse_args()
     if args.selftest:
         return selftest()
     if args.judge:
-        return judge_file(args.judge, primary=args.primary)
+        return judge_file(args.judge, primary=args.primary, write_report=args.write_report)
     return run(args)
 
 
