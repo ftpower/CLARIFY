@@ -70,6 +70,8 @@
 #   bash scripts/review_local.sh dola-gen-sep-rp10  # 退化归因分离 rp=1.0 档（n=100，需 GPU）
 #   bash scripts/review_local.sh dola-gen-sep-rp12  # 退化归因分离 rp=1.2 档（n=100，需 GPU）
 #   bash scripts/review_local.sh dola-gen-sep-judge # 退化归因分离判读（零 GPU；须先跑 rp10/rp12）
+#   bash scripts/review_local.sh rii-probe-sym     # RII 方向 A·A2 探测档（PROBE_BETA=0.05/0.03/0.08，SEED 可覆盖）
+#   bash scripts/review_local.sh rii-probe-judge   # RII 方向 A·A2 判读（零 GPU；SEEDS 默认 123 456，缺档告警）
 #
 # 说明：每条命令写成单行（`\` 续行在部分终端粘贴时会因行尾空格失效）。
 # 服务器命令请自行补 `unset HF_ENDPOINT && HF_HOME=...` 前缀（见 runbook §2）。
