@@ -77,6 +77,7 @@
 #   bash scripts/review_local.sh fsa               # 方向一 FSA 主档（n=300；S0 已 close 不再排期）
 #   bash scripts/review_local.sh posthoc-8b-judge  # A1-8B 复验判读（零 GPU；SEEDS=789，判据 RII §5.1）
 #   bash scripts/review_local.sh crg-gate          # 方向二 CRG S0 判读（零 GPU；2026-09-29 已判 close）
+#   bash scripts/review_local.sh cto-declare       # 方向三 CTO S0 预判读（零 GPU；2026-09-29 已判 close）
 #
 # 说明：每条命令写成单行（`\` 续行在部分终端粘贴时会因行尾空格失效）。
 # 服务器命令请自行补 `unset HF_ENDPOINT && HF_HOME=...` 前缀（见 runbook §2）。
@@ -420,6 +421,13 @@ case "${1:-}" in
       --arch "${ARCH:-experiments/outputs/geometry_archive}" \
       --seeds ${SEEDS:-123 456} \
       --out_dir "${OUT_DIR:-experiments/outputs/crg_gate}"
+    ;;
+  cto-declare)
+    # 方向三 CTO S0 预判读（零 GPU；判据见 docs/protocol/cto-calibrated-ternary-output-20260929.md §5；
+    # 2026-09-29 已判读 → close，保留供复现与审计）
+    python experiments/lin_theory/analyze_cto_declare.py \
+      --oof "${OOF:-experiments/outputs/lin_theory_8b/detect_lr_probe_oof.json}" \
+      --out_dir "${OUT_DIR:-experiments/outputs/cto_declare}"
     ;;
   *)
     sed -n '2,40p' "$0"
