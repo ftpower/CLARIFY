@@ -78,6 +78,9 @@
 #   bash scripts/review_local.sh posthoc-8b-judge  # A1-8B 复验判读（零 GPU；SEEDS=789，判据 RII §5.1）
 #   bash scripts/review_local.sh crg-gate          # 方向二 CRG S0 判读（零 GPU；2026-09-29 已判 close）
 #   bash scripts/review_local.sh cto-declare       # 方向三 CTO S0 预判读（零 GPU；2026-09-29 已判 close）
+#   bash scripts/review_local.sh head-attr         # A-6 S1 归因 dump（1.7B GPU；SEED=123 与 456 两档）
+#   bash scripts/review_local.sh head-ablate       # A-6 S2 头级零消融（1.7B GPU；HEAD_L/HEAD_H 必填）
+#   bash scripts/review_local.sh head-loc-judge    # A-6 判读（零 GPU；--precheck/默认/--ablate）
 #
 # 说明：每条命令写成单行（`\` 续行在部分终端粘贴时会因行尾空格失效）。
 # 服务器命令请自行补 `unset HF_ENDPOINT && HF_HOME=...` 前缀（见 runbook §2）。
@@ -428,6 +431,25 @@ case "${1:-}" in
     python experiments/lin_theory/analyze_cto_declare.py \
       --oof "${OOF:-experiments/outputs/lin_theory_8b/detect_lr_probe_oof.json}" \
       --out_dir "${OUT_DIR:-experiments/outputs/cto_declare}"
+    ;;
+  head-attr)
+    # A-6 S1 归因 dump（1.7B 本地 GPU，~25–30 分钟；须跑 SEED=123 与 SEED=456 两档；
+    # 判据见 docs/protocol/a6-head-rescue-circuit-20260929.md §3）
+    python experiments/lin_theory/dump_head_attribution.py \
+      --model "$MODEL_1P7B" --layer_early 20 --n_test 300 --seed_test "${SEED:-123}" \
+      --beta 0.20 --output_dir "${OUT_DIR:-experiments/outputs/head_attribution}"
+    ;;
+  head-ablate)
+    # A-6 S2 头级零消融（1.7B 本地 GPU；HEAD_L/HEAD_H 必填，~25–30 分钟/条；
+    # 8 选中头由 head-loc-judge 输出，另 8 固定随机头见协议 §5）
+    python experiments/lin_theory/dump_head_attribution.py \
+      --model "$MODEL_1P7B" --layer_early 20 --n_test 300 --seed_test 456 \
+      --beta 0.20 --ablate_head "${HEAD_L:?须传 HEAD_L}-${HEAD_H:?须传 HEAD_H}" \
+      --output_dir "${OUT_DIR:-experiments/outputs/head_ablation}"
+    ;;
+  head-loc-judge)
+    # A-6 判读（零 GPU）：--precheck（S0 功效）/ 默认（S1 归因）/ --ablate（S2 零消融）
+    python experiments/lin_theory/analyze_head_loc.py "$@"
     ;;
   *)
     sed -n '2,40p' "$0"
