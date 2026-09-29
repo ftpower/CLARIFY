@@ -155,6 +155,7 @@ def analyze_beta(rows, theta_main=THETA_MAIN):
     out["n_samples"] = len(rows)
     out["n_diverged"] = sum(1 for r in rows if r["t_p"] is not None)
     out["n_signal"] = sum(1 for r in rows if r["signal"] is not None)
+    out["n_excluded_none"] = sum(1 for r in rows if r["t_p"] is not None and r["signal"] is None)
     out["s0_violations"] = sum(r.get("s0_viol", 0) for r in rows)
     out["s0_pass"] = out["s0_violations"] == 0
     pc = {s: 0 for s in ("know_wrong", "know_correct", "dont_know")}
@@ -238,6 +239,9 @@ def render(rows, meta, probe_betas, final_beta, arch, out_dir):
                      f"DK {o['diverged_by_subset']['dont_know']}）｜"
                      f"探测自身救回 {o['probe_rescue']}／破坏 {o['probe_break']}")
         lines.append(f"- 信号非缺失 {o['n_signal']}；最终干预标签：救回 {o['n_rescue']}／破坏 {o['n_break']}")
+        lines.append(f"- 选择池排除：探测未分叉 {o['n_samples'] - o['n_diverged']}；"
+                     f"分叉但 t_p+1 步 R 空（信号缺失；A1 口径按「最稳固⇒保留」，A2 口径排除）"
+                     f"{o['n_excluded_none']}")
         lines.append(f"- 可分性（探测响应 → 最终救回/破坏）：AUROC **{o['auroc']:.3f}**"
                      f" CP95 [{o['ci_lo']:.3f}, {o['ci_hi']:.3f}]｜"
                      f"分 seed { {int(k): round(v, 3) for k, v in o['per_seed'].items()} }"
@@ -294,6 +298,7 @@ def selftest():
     o = analyze_beta(rows)
     assert o["n_samples"] == 4 and o["n_signal"] == 4
     assert o["n_rescue"] == 2 and o["n_break"] == 1
+    assert o["n_excluded_none"] == 0
     assert o["s0_pass"] and o["s0_violations"] == 0
     rows_s0 = [dict(r, s0_viol=1) for r in rows]
     assert analyze_beta(rows_s0)["s0_violations"] == 4 and not analyze_beta(rows_s0)["s0_pass"]
