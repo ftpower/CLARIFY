@@ -46,6 +46,7 @@
 import argparse
 import json
 import os
+import random
 import sys
 import time
 from pathlib import Path
@@ -83,12 +84,14 @@ from src.data_loader import check_correct_exact, load_triviaqa  # noqa: E402
 BETAS = [0.0, 0.01, 0.02, 0.03, 0.05, 0.08, 0.10, 0.15, 0.20, 0.30, 0.50]
 TOP_K = 10  # 每步存档的 top-k（可视化/描点用；判定靠 grid，不靠 top-k）
 N_FRONT = len(BETAS)  # (β₊,β₋) 前沿网格尺寸 = 11×11
+FS_K = 10  # FSA 共识集半径（主档；判据见 fsa-flip-set-arbitration-20260929.md §5）
 
 THEORY_REFS = {
     "fad_lemma1": "docs/paper/paper-route-method-schemes.md §2.2 引理 1（m=margin、Δ₀=参考层偏好差、β*>m/(m+Δ₀) 可翻转）",
     "fad_prop5": "docs/paper/paper-route-method-schemes.md §2.5 命题 5（P(r)≤P(g=1)·P(h=1|g=1)，g=几何可用性）",
     "fad_p51": "docs/paper/paper-route-method-schemes.md §5 P5.1（P(g=1) 非平凡且 KW/KC 可分离；近零⇒结构性封顶判停）",
     "s5": "docs/paper/paper-route-tldc-improvements.md §S5（抬支 l₊=l₁+β·ReLU(δ)、压支 l₋=l₁−β·ReLU(−δ)、P-S5.1–5.3）",
+    "fsa": "docs/protocol/fsa-flip-set-arbitration-20260929.md（方向一·翻转集仲裁解码，S0–S3 判据）",
     "spec": "docs/protocol/geometry-archive-spec.md（schema 与判读协议）",
 }
 
@@ -106,6 +109,40 @@ def apply_branches(l0, l1, beta_plus, beta_minus):
     """
     delta = l0.float() - l1.float()
     return l1.float() + beta_plus * torch.relu(delta) - beta_minus * torch.relu(-delta)
+
+
+def apply_fsa(l_early, l_final, k=FS_K, rng=None):
+    """翻转集仲裁（FSA）算子（判据见 docs/protocol/fsa-flip-set-arbitration-20260929.md §1）。
+
+    a = argmax(l_final)；E_k = top-k(l_early) token 集。
+      a ∈ E_k          ⇒ 无分歧，返回 l_final 原样（触发 False）；
+      a ∉ E_k          ⇒ 共识集 C = top-k(l_final) ∩ E_k；
+        C 空           ⇒ 仲裁失败，保守返回 l_final（kept=True）；
+        rng is None    ⇒ C 外 token 置 −∞（argmax 落于 C 内按 l_final 排序，真方法）；
+        rng given      ⇒ 只保留随机候选（fsa-rand 安慰剂）。
+    输入 [..., V]；返回 (logits', fsa_info)。
+    """
+    lf = l_final.float().squeeze()
+    le = l_early.float().squeeze()
+    e_ids = torch.topk(le, k).indices.tolist()
+    a = int(lf.argmax().item())
+    if a in e_ids:
+        return lf, {"triggered": False, "C": [], "kept": True, "candidate": a}
+    f_ids = torch.topk(lf, k).indices.tolist()
+    C = [t for t in f_ids if t in e_ids]
+    if not C:
+        return lf, {"triggered": True, "C": [], "kept": True, "candidate": a}
+    if rng is None:
+        cand = max(C, key=lambda t: float(lf[t].item()))
+        keep = C
+    else:
+        cand = rng.choice(C)
+        keep = [cand]
+    out = lf.clone()
+    mask = torch.ones_like(out, dtype=torch.bool)
+    mask[keep] = False
+    out[mask] = float("-inf")
+    return out, {"triggered": True, "C": C, "kept": bool(cand == a), "candidate": cand}
 
 
 def _empty_geo(a_id, a_text, l0_a, l1_a):
@@ -258,7 +295,30 @@ def selftest():
     assert int(lift.argmax()) == 0 and int(sym.argmax()) == 1  # β=0.5：lift 未翻、sym 翻
     ok += 1
 
-    print(f"SELFTEST PASS: {ok}/4 checks (flip-set / grid / empty-R / branch identity)")
+    # ── 案例 4：FSA 仲裁算子（方案 fsa-...md §1）──
+    import random as _rnd
+    l1c = torch.tensor([[3.0, 2.5, 1.0]])
+    l0c = torch.tensor([[1.0, 3.5, 2.2]])
+    # k=2：E={1,2}（l0 top-2），a=0 ∉ E ⇒ 触发；C=top-2(l1){0,1}∩E={1} ⇒ cand=1
+    out4, info4 = apply_fsa(l0c, l1c, k=2)
+    assert info4["triggered"] and info4["C"] == [1] and info4["candidate"] == 1
+    assert int(out4.argmax().item()) == 1
+    assert torch.isinf(out4[0]) and not torch.isinf(out4[1]) and torch.isinf(out4[2])
+    # 无分歧：E={0,1}（l0=[3.5,1.0,0.5] top-2），a=0 ∈ E ⇒ 不触发、logits 原样
+    out4c, info4c = apply_fsa(torch.tensor([[3.5, 1.0, 0.5]]), l1c, k=2)
+    assert not info4c["triggered"] and int(out4c.argmax().item()) == 0
+    # 空共识：k=1，E={1}（3.5），a=0 ∉ E；C=top-1(l1){0}∩{1}=∅ ⇒ 保守不动
+    out4d, info4d = apply_fsa(l0c, l1c, k=1)
+    assert info4d["triggered"] and info4d["C"] == [] and info4d["kept"] is True
+    assert int(out4d.argmax().item()) == 0
+    # 安慰剂：rng 固定 ⇒ 候选 ∈ C 且确定性
+    r4 = _rnd.Random(42)
+    out4e, info4e = apply_fsa(l0c, l1c, k=2, rng=r4)
+    assert info4e["candidate"] in info4e["C"] and int(out4e.argmax().item()) == info4e["candidate"]
+    ok += 1
+
+    print(f"SELFTEST PASS: {ok}/5 checks (flip-set / grid / empty-R / branch identity / fsa)")
+    return ok
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -303,7 +363,7 @@ def dump_sample(
         captured["h_early"] = act[:, -1:, :].detach()
         return act
 
-    beta_plus, beta_minus = _OP_BRANCHES[operator]
+    beta_plus, beta_minus = _OP_BRANCHES.get(operator, (0.0, 0.0))
     bp = beta if beta_plus == "b" else float(beta_plus)
     bm = beta if beta_minus == "b" else float(beta_minus)
 
@@ -319,22 +379,32 @@ def dump_sample(
         l_early = compute_early_exit_logits(h_early, ln_final, W_U, b_U)
         l_final = logits_final[0, -1:, :].float()  # TRUE final logits（禁 lens 代验）
 
-        l_combined = apply_branches(l_early, l_final, bp, bm)
-        nid = int(l_combined.argmax(dim=-1).item())
+        fsa_info = None
+        if operator in ("fsa", "fsa-rand"):
+            rng = None
+            if operator == "fsa-rand":
+                rng = random.Random(entry["sample_id"] * 1000 + step)
+            l_combined, fsa_info = apply_fsa(l_early, l_final, k=FS_K, rng=rng)
+            nid = int(l_combined.argmax(dim=-1).item())
+            assert nid == fsa_info["candidate"]  # 自洽：argmax 必须等于仲裁候选
+        else:
+            l_combined = apply_branches(l_early, l_final, bp, bm)
+            nid = int(l_combined.argmax(dim=-1).item())
         gids.append(nid)
 
         e_f = l_early.float().squeeze()
         f_f = l_final.float().squeeze()
-        steps_log.append(
-            {
-                "step": step,
-                "chosen_id": nid,
-                "geo": compute_geo(l_early, l_final, y_true_id, tokenizer),
-                "grid": compute_grid(l_early, l_final, BETAS),
-                "early_top10": get_topk_info(e_f, tokenizer, k=TOP_K),
-                "final_top10": get_topk_info(f_f, tokenizer, k=TOP_K),
-            }
-        )
+        step_log = {
+            "step": step,
+            "chosen_id": nid,
+            "geo": compute_geo(l_early, l_final, y_true_id, tokenizer),
+            "grid": compute_grid(l_early, l_final, BETAS),
+            "early_top10": get_topk_info(e_f, tokenizer, k=TOP_K),
+            "final_top10": get_topk_info(f_f, tokenizer, k=TOP_K),
+        }
+        if fsa_info is not None:
+            step_log["fsa"] = fsa_info
+        steps_log.append(step_log)
 
         # 自洽校验：若 β 在预注册网格内，算子 argmax 必须与网格一致
         if operator in ("sym", "lift", "damp") and beta in BETAS:
@@ -400,6 +470,19 @@ def verify_archive(path):
             # baseline 轨迹：chosen == a_id
             if meta.get("operator") == "baseline" and st.get("chosen_id") != geo["a_id"]:
                 _err(f"sample {sid} step {st.get('step')}: chosen {st.get('chosen_id')} != a_id {geo['a_id']}")
+            # FSA 轨迹：chosen 必须等于仲裁候选；无分歧步 chosen == a_id
+            if meta.get("operator") in ("fsa", "fsa-rand"):
+                fi = st.get("fsa")
+                if fi is None:
+                    _err(f"sample {sid} step {st.get('step')}: fsa 算子档缺 fsa 字段")
+                elif st.get("chosen_id") != fi.get("candidate"):
+                    _err(f"sample {sid} step {st.get('step')}: chosen != fsa.candidate")
+                elif not fi.get("triggered") and st.get("chosen_id") != geo["a_id"]:
+                    _err(f"sample {sid} step {st.get('step')}: 无分歧步 chosen != a_id")
+                elif fi.get("triggered") and fi.get("C") and st.get("chosen_id") not in fi["C"]:
+                    _err(f"sample {sid} step {st.get('step')}: 仲裁候选不在共识集内")
+                elif fi.get("triggered") and not fi.get("C") and st.get("chosen_id") != geo["a_id"]:
+                    _err(f"sample {sid} step {st.get('step')}: 空共识步应保守不动")
             # front2d 形状
             fd = grid.get("front2d")
             if not (isinstance(fd, list) and len(fd) == n_betas and all(len(r) == n_betas for r in fd)):
@@ -437,8 +520,9 @@ def main():
         "--operator",
         type=str,
         default="baseline",
-        choices=["baseline", "sym", "lift", "damp"],
-        help="轨迹算子：baseline=纯 greedy（阶段 1）；sym/lift/damp=阶段 2 单侧/对称轨迹",
+        choices=["baseline", "sym", "lift", "damp", "fsa", "fsa-rand"],
+        help="轨迹算子：baseline=纯 greedy（阶段 1）；sym/lift/damp=阶段 2 单侧/对称轨迹；"
+             "fsa/fsa-rand=方向一翻转集仲裁（真方法/随机安慰剂）",
     )
     parser.add_argument("--beta", type=float, default=0.0, help="阶段 2 算子强度（须 ∈ BETAS）")
     parser.add_argument("--max_new", type=int, default=20)
@@ -458,7 +542,7 @@ def main():
         verify_archive(args.verify)
         return
 
-    if args.operator != "baseline":
+    if args.operator in ("sym", "lift", "damp"):
         if args.beta not in BETAS:
             sys.exit(
                 f"预注册纪律：--beta={args.beta} 不在 BETAS={BETAS} 内。"
@@ -529,6 +613,7 @@ def main():
             "max_new": args.max_new,
             "betas": BETAS,
             "top_k": TOP_K,
+            "fsa_k": FS_K if args.operator in ("fsa", "fsa-rand") else None,
             "theory_refs": THEORY_REFS,
             "script": Path(__file__).name,
             "created": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -536,7 +621,7 @@ def main():
         "samples": samples_out,
     }
     fname = f"geo_{args.operator}"
-    if args.operator != "baseline":
+    if args.operator in ("sym", "lift", "damp"):
         fname += f"_b{args.beta:.2f}".replace(".", "")
     out_path = output_dir / f"{fname}_seed{args.seed_test}.json"
     with open(out_path, "w") as f:

@@ -72,6 +72,10 @@
 #   bash scripts/review_local.sh dola-gen-sep-judge # 退化归因分离判读（零 GPU；须先跑 rp10/rp12）
 #   bash scripts/review_local.sh rii-probe-sym     # RII 方向 A·A2 探测档（PROBE_BETA=0.05/0.03/0.08，SEED 可覆盖）
 #   bash scripts/review_local.sh rii-probe-judge   # RII 方向 A·A2 判读（零 GPU；SEEDS 默认 123 456，缺档告警）
+#   bash scripts/review_local.sh fsa-ceiling       # 方向一 FSA S0 可拦性上界（零 GPU；2026-09-29 已判 close）
+#   bash scripts/review_local.sh fsa-smoke         # 方向一 FSA 小样本试运行（n=30；S0 已 close 不再排期）
+#   bash scripts/review_local.sh fsa               # 方向一 FSA 主档（n=300；S0 已 close 不再排期）
+#   bash scripts/review_local.sh posthoc-8b-judge  # A1-8B 复验判读（零 GPU；SEEDS=789，判据 RII §5.1）
 #
 # 说明：每条命令写成单行（`\` 续行在部分终端粘贴时会因行尾空格失效）。
 # 服务器命令请自行补 `unset HF_ENDPOINT && HF_HOME=...` 前缀（见 runbook §2）。
@@ -382,6 +386,31 @@ case "${1:-}" in
   betastar-8b)
     # 服务器用（8B 上算子净正：H1′ 成立档）——命令格式须按 CLAUDE.md 硬性要求加前缀
     env -u HF_ENDPOINT HF_HOME="${HF_HOME_SERVER:-/root/autodl-tmp/huggingface_cache}" python -u experiments/lin_theory/main_tldc_betastar.py --model Qwen/Qwen3-8B --layer_early 28 --n_test 300 --seed_test "${SEED:-123}"
+    ;;
+  fsa-ceiling)
+    # 方向一 FSA S0 可拦性上界（零 GPU；判据见 docs/protocol/fsa-flip-set-arbitration-20260929.md §5；
+    # 2026-09-29 已判读 → close，保留供复现与审计）
+    python experiments/lin_theory/analyze_fsa_ceiling.py \
+      --arch "${ARCH:-experiments/outputs/geometry_archive}" \
+      --seeds ${SEEDS:-123 456} \
+      --out_dir "${OUT_DIR:-experiments/outputs/fsa_ceiling}"
+    ;;
+  fsa-smoke)
+    # 方向一 FSA 小样本试运行（n=30；S0 通过后使用——S0 已 close，本档不再排期）
+    python experiments/lin_theory/dump_geometry_archive.py --model "$MODEL_1P7B" --layer_early 20 --n_test 30 --seed_test "${SEED:-123}" --operator fsa --output_dir "${OUT_DIR:-experiments/outputs/fsa_1p7b}"
+    ;;
+  fsa)
+    # 方向一 FSA 主档（n=300；S0 通过后使用——S0 已 close，本档不再排期）
+    python experiments/lin_theory/dump_geometry_archive.py --model "$MODEL_1P7B" --layer_early 20 --n_test 300 --seed_test "${SEED:-123}" --operator fsa --output_dir "${OUT_DIR:-experiments/outputs/fsa_1p7b}"
+    ;;
+  posthoc-8b-judge)
+    # A1-8B 复验判读（零 GPU；RII 协议 §5.1：seed789 post_beta AUROC ≥0.70 ∧ 与 seed123 同向 ⇒ 8B 转正；
+    # ≤0.60 ⇒ 验证器路线在 8B 关闭；其余 ⇒ 不确定区间。须先跑 8B 三档并 scp 回本地）
+    python experiments/lin_theory/analyze_posthoc_direction.py \
+      --seeds ${SEEDS:-789} \
+      --arch "${ARCH_SYM:-experiments/outputs/geometry_archive_8b_sym}" \
+      --arch_baseline "${ARCH_BASE:-experiments/outputs/geometry_archive_8b}" \
+      --out "${OUT:-experiments/outputs/posthoc_direction_8b}"
     ;;
   *)
     sed -n '2,40p' "$0"
